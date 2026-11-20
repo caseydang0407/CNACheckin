@@ -1,0 +1,6 @@
+{
+  "name": "CNA Union Check-In & Compliance",
+  "description": "California Nurses Association cross-platform union meeting check-in, passcode access control, real-time branch attendance analytics, encrypted document vault, and automated compliance reporting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
