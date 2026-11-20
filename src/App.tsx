@@ -5,7 +5,6 @@ import {
   ClipboardCheck,
   Code2,
   FileLock2,
-  LogIn,
   LogOut,
   Menu,
   Moon,
@@ -22,12 +21,17 @@ import {
   CloudConnector,
   EncryptedDocument,
   PasscodeDispatch,
+  REGIONAL_BRANCHES,
   RegionalBranch,
   StaffMember,
   WebhookConfig,
 } from './types/union';
-import { computeBranchCompliance } from './utils/rbac';
+import { computeBranchCompliance, getPermissionsForRole } from './utils/rbac';
 import { loadThemePreference, saveThemePreference } from './utils/cookies';
+import {
+  extractSpreadsheetId,
+  resolveAuthenticatedStaff,
+} from './utils/googleSheetsHelpers';
 import { CheckInPortal } from './components/CheckInPortal';
 import { DashboardView } from './components/DashboardView';
 import { RbacAccessView } from './components/RbacAccessView';
@@ -35,11 +39,14 @@ import { VaultAndCloudView } from './components/VaultAndCloudView';
 import { AuditComplianceView } from './components/AuditComplianceView';
 import { ApiIntegrationsView } from './components/ApiIntegrationsView';
 import { OnboardingTour } from './components/OnboardingTour';
+import { GoogleSignInButton } from './components/GoogleSignInButton';
+import { ConfirmSheetModal } from './components/ConfirmSheetModal';
 import {
   auth,
   onAuthStateChanged,
   signInWithGoogle,
   signOutFirebase,
+  subscribeGoogleAccessToken,
   type User,
 } from './firebase';
 import {
@@ -50,12 +57,21 @@ import {
   saveStaticWorkspace,
   subscribeFirestoreWorkspace,
 } from './services/unionBackend';
-import leadAvatarImg from './assets/images/cna_lead_avatar_1795193812224.jpg';
+import {
+  clearLinkedSheetConfig,
+  createCnaGoogleSheet,
+  inspectGoogleSheet,
+  LinkedGoogleSheetConfig,
+  loadLinkedSheetConfig,
+  pullAttendanceFromGoogleSheet,
+  saveLinkedSheetConfig,
+  syncWorkspaceToGoogleSheet,
+} from './services/googleSheets';
 
 type NavTab = 'checkin' | 'dashboard' | 'rbac' | 'vault' | 'audit' | 'api';
 type BackendMode = 'firebase' | 'express' | 'static';
 
-const NAV_ITEMS: Array<{
+const ALL_NAV_ITEMS: Array<{
   id: NavTab;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
@@ -69,13 +85,7 @@ const NAV_ITEMS: Array<{
 ];
 
 export function App() {
-  const [activeTab, setActiveTab] = useState<NavTab>(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      if (params.get('autostart') === '1') return 'dashboard';
-    }
-    return 'checkin';
-  });
+  const [activeTab, setActiveTab] = useState<NavTab>('checkin');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => loadThemePreference());
   const [tourOpen, setTourOpen] = useState(false);
@@ -84,10 +94,21 @@ export function App() {
   const [authReady, setAuthReady] = useState(false);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [backendMode, setBackendMode] = useState<BackendMode>('static');
+  const [previewStaffId, setPreviewStaffId] = useState<string | null>(null);
+
+  const [sheetsAccessToken, setSheetsAccessToken] = useState<string | null>(null);
+  const [linkedSheet, setLinkedSheet] = useState<LinkedGoogleSheetConfig | null>(() =>
+    loadLinkedSheetConfig()
+  );
+  const [sheetBusy, setSheetBusy] = useState(false);
+  const [sheetNotice, setSheetNotice] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
+  const [pendingSheetAction, setPendingSheetAction] = useState<'create' | 'sync' | null>(null);
 
   const [today, setToday] = useState(() => getTodayDateKeyClient());
   const [staff, setStaff] = useState<StaffMember[]>([]);
-  const [activeUserId, setActiveUserId] = useState<string>('staff-1');
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
   const [dispatches, setDispatches] = useState<PasscodeDispatch[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
@@ -110,16 +131,25 @@ export function App() {
     saveThemePreference(theme);
   }, [theme]);
 
-  // Listen to Firebase Auth state
+  // Listen to Firebase Auth state & in-memory Google access token
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
       setFirebaseUser(user);
+      if (!user) {
+        setPreviewStaffId(null);
+      }
       setAuthReady(true);
     });
-    return () => unsub();
+    const unsubToken = subscribeGoogleAccessToken((token) => {
+      setSheetsAccessToken(token);
+    });
+    return () => {
+      unsubAuth();
+      unsubToken();
+    };
   }, []);
 
-  const fetchExpressBootstrap = useCallback(async (actorId: string): Promise<boolean> => {
+  const fetchExpressBootstrap = useCallback(async (): Promise<boolean> => {
     try {
       if (
         import.meta.env.VITE_STATIC_ONLY === 'true' ||
@@ -127,9 +157,7 @@ export function App() {
       ) {
         return false;
       }
-      const res = await fetch('/api/v1/bootstrap', {
-        headers: { 'x-actor-id': actorId },
-      });
+      const res = await fetch('/api/v1/bootstrap');
       const ct = res.headers.get('content-type') ?? '';
       if (!res.ok || !ct.includes('application/json')) {
         return false;
@@ -151,7 +179,7 @@ export function App() {
     }
   }, []);
 
-  // Load workspace from Firebase (when signed in), Express (dev/Node host), or static browser store (GitHub Pages)
+  // Load workspace from Firebase (when signed in), Express (dev/Node host), or static browser store
   useEffect(() => {
     if (!authReady) return;
 
@@ -193,7 +221,7 @@ export function App() {
     let active = true;
 
     (async () => {
-      const ok = await fetchExpressBootstrap(activeUserId);
+      const ok = await fetchExpressBootstrap();
       if (!active) return;
 
       if (ok) {
@@ -201,7 +229,7 @@ export function App() {
         setLoading(false);
         sseSource = new EventSource('/api/v1/stream');
         const refresh = () => {
-          void fetchExpressBootstrap(activeUserId);
+          void fetchExpressBootstrap();
         };
         sseSource.addEventListener('attendance:new', refresh);
         sseSource.addEventListener('audit:new', refresh);
@@ -230,7 +258,7 @@ export function App() {
       active = false;
       sseSource?.close();
     };
-  }, [authReady, firebaseUser, activeUserId, fetchExpressBootstrap]);
+  }, [authReady, firebaseUser, fetchExpressBootstrap]);
 
   // Persist changes to browser static storage when in static GitHub Pages mode
   useEffect(() => {
@@ -262,33 +290,43 @@ export function App() {
     webhooks,
   ]);
 
-  // Match signed-in Google user to staff profile when available
-  useEffect(() => {
-    if (!firebaseUser?.email || staff.length === 0) return;
-    const matched = staff.find(
-      (s) => s.email.toLowerCase() === firebaseUser.email!.toLowerCase()
-    );
-    if (matched) {
-      setActiveUserId(matched.id);
-    }
-  }, [firebaseUser, staff]);
+  // Strict authenticated role resolution (never grants Elena Vance / Admin view to visitors or regular members)
+  const identity = useMemo(
+    () =>
+      resolveAuthenticatedStaff({
+        firebaseUser,
+        staff,
+        previewStaffId,
+      }),
+    [firebaseUser, staff, previewStaffId]
+  );
 
-  const activeUser: StaffMember = useMemo(() => {
-    return (
-      staff.find((s) => s.id === activeUserId) ??
-      staff[0] ?? {
-        id: 'staff-1',
-        name: firebaseUser?.displayName || 'Elena Vance, RN',
-        email: firebaseUser?.email || 'caseydang0407@gmail.com',
-        role: 'Administrative Staff',
-        assignedBranches: ['San Francisco', 'Sacramento', 'Los Angeles', 'Irvine', 'San Diego'],
-        facility: 'CNA Statewide Operations',
-        active: true,
-        lastActiveAt: new Date().toISOString(),
-        canReceivePasscode: true,
-      }
-    );
-  }, [staff, activeUserId, firebaseUser]);
+  const activeUser = identity.staffMember;
+  const activePerms = useMemo(
+    () => (activeUser ? getPermissionsForRole(activeUser.role) : null),
+    [activeUser]
+  );
+
+  const visibleNavItems = useMemo(() => {
+    if (!identity.isAuthorizedStaff || !activePerms) {
+      return ALL_NAV_ITEMS.filter((item) => item.id === 'checkin');
+    }
+    return ALL_NAV_ITEMS.filter((item) => {
+      if (item.id === 'checkin' || item.id === 'dashboard') return true;
+      if (item.id === 'rbac') return activePerms.canManageRbac;
+      if (item.id === 'vault') return activePerms.canManageVault;
+      if (item.id === 'audit') return activePerms.canViewAuditLog;
+      if (item.id === 'api') return activePerms.canManageApiKeys;
+      return false;
+    });
+  }, [identity.isAuthorizedStaff, activePerms]);
+
+  // Keep activeTab restricted to what the signed-in user's role permits
+  useEffect(() => {
+    if (!visibleNavItems.some((item) => item.id === activeTab)) {
+      setActiveTab('checkin');
+    }
+  }, [visibleNavItems, activeTab]);
 
   const globalComplianceToday = useMemo(
     () => computeBranchCompliance(attendance, today),
@@ -297,6 +335,7 @@ export function App() {
 
   const handleGoogleSignIn = async () => {
     setAuthNotice(null);
+    setAvatarFailed(false);
     try {
       await signInWithGoogle();
     } catch (err) {
@@ -308,6 +347,8 @@ export function App() {
 
   const handleGoogleSignOut = async () => {
     setAuthNotice(null);
+    setPreviewStaffId(null);
+    setActiveTab('checkin');
     await signOutFirebase();
   };
 
@@ -317,6 +358,7 @@ export function App() {
     details: string,
     branch: RegionalBranch | 'All Branches' = 'All Branches'
   ) => {
+    if (!activeUser) return;
     if (backendMode === 'express') {
       const res = await fetch('/api/v1/audit-logs', {
         method: 'POST',
@@ -358,7 +400,140 @@ export function App() {
     }
   };
 
-  const activeNavLabel = NAV_ITEMS.find((n) => n.id === activeTab)?.label ?? 'Portal';
+  const handleLinkGoogleSheet = async (urlOrId: string) => {
+    setSheetNotice(null);
+    if (!sheetsAccessToken) {
+      setSheetNotice({
+        type: 'error',
+        text: 'Click "Connect Google Sheets" first to authorize spreadsheet access in this session.',
+      });
+      return;
+    }
+    const id = extractSpreadsheetId(urlOrId);
+    if (!id) {
+      setSheetNotice({
+        type: 'error',
+        text: 'Enter a valid Google Sheets URL or Spreadsheet ID.',
+      });
+      return;
+    }
+    setSheetBusy(true);
+    try {
+      const meta = await inspectGoogleSheet(sheetsAccessToken, id);
+      saveLinkedSheetConfig(meta);
+      setLinkedSheet(meta);
+      setSheetNotice({
+        type: 'success',
+        text: `Linked Google Sheet "${meta.title}" (${meta.availableTabs.join(', ')}).`,
+      });
+    } catch (err) {
+      setSheetNotice({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Unable to inspect Google Sheet.',
+      });
+    } finally {
+      setSheetBusy(false);
+    }
+  };
+
+  const handlePullGoogleSheet = async () => {
+    setSheetNotice(null);
+    if (!sheetsAccessToken || !linkedSheet) return;
+    setSheetBusy(true);
+    try {
+      const pulled = await pullAttendanceFromGoogleSheet({
+        accessToken: sheetsAccessToken,
+        spreadsheetId: linkedSheet.spreadsheetId,
+        sheetTitle: linkedSheet.attendanceTab,
+      });
+      if (pulled.length === 0) {
+        setSheetNotice({
+          type: 'success',
+          text: `Checked "${linkedSheet.attendanceTab}" in "${linkedSheet.title}" — no rows found yet.`,
+        });
+      } else {
+        setAttendance((prev) => {
+          const map = new Map<string, AttendanceRecord>();
+          for (const item of pulled) map.set(item.id, item);
+          for (const item of prev) {
+            if (!map.has(item.id)) map.set(item.id, item);
+          }
+          return Array.from(map.values()).sort((a, b) =>
+            b.checkedInAt.localeCompare(a.checkedInAt)
+          );
+        });
+        setSheetNotice({
+          type: 'success',
+          text: `Loaded ${pulled.length} attendance records from "${linkedSheet.title}" (${linkedSheet.attendanceTab}).`,
+        });
+      }
+    } catch (err) {
+      setSheetNotice({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to load rows from Google Sheet.',
+      });
+    } finally {
+      setSheetBusy(false);
+    }
+  };
+
+  const handleConfirmSheetMutation = async () => {
+    if (!pendingSheetAction || !sheetsAccessToken) return;
+    setSheetBusy(true);
+    setSheetNotice(null);
+    try {
+      if (pendingSheetAction === 'create') {
+        const created = await createCnaGoogleSheet(sheetsAccessToken);
+        const synced = await syncWorkspaceToGoogleSheet({
+          accessToken: sheetsAccessToken,
+          config: created,
+          attendance,
+          staff,
+          auditLogs,
+        });
+        saveLinkedSheetConfig(synced);
+        setLinkedSheet(synced);
+        setSheetNotice({
+          type: 'success',
+          text: `Created & synced "${synced.title}" (${attendance.length} attendance rows).`,
+        });
+        await handleRecordAudit(
+          'CLOUD_SYNC_EXECUTED',
+          `Google Sheets (${synced.title})`,
+          `Created spreadsheet and synced ${attendance.length} attendance rows, ${staff.length} staff, and ${auditLogs.length} audit logs.`
+        );
+      } else if (pendingSheetAction === 'sync' && linkedSheet) {
+        const synced = await syncWorkspaceToGoogleSheet({
+          accessToken: sheetsAccessToken,
+          config: linkedSheet,
+          attendance,
+          staff,
+          auditLogs,
+        });
+        saveLinkedSheetConfig(synced);
+        setLinkedSheet(synced);
+        setSheetNotice({
+          type: 'success',
+          text: `Synced ${attendance.length} attendance rows, ${staff.length} staff records, and ${auditLogs.length} audit entries to "${synced.title}".`,
+        });
+        await handleRecordAudit(
+          'CLOUD_SYNC_EXECUTED',
+          `Google Sheets (${synced.title})`,
+          `Updated ${synced.attendanceTab}, Staff, and AuditLog tabs (${attendance.length} attendance records).`
+        );
+      }
+    } catch (err) {
+      setSheetNotice({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Google Sheets update failed.',
+      });
+    } finally {
+      setSheetBusy(false);
+      setPendingSheetAction(null);
+    }
+  };
+
+  const activeNavLabel = ALL_NAV_ITEMS.find((n) => n.id === activeTab)?.label ?? 'Portal';
 
   return (
     <div className="min-h-screen flex bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
@@ -378,7 +553,7 @@ export function App() {
         </div>
 
         <nav aria-label="Workspace Navigation" className="flex-1 p-3 space-y-1">
-          {NAV_ITEMS.map((item) => {
+          {visibleNavItems.map((item) => {
             const Icon = item.icon;
             const active = activeTab === item.id;
             return (
@@ -397,74 +572,89 @@ export function App() {
               </button>
             );
           })}
+
+          {!identity.isAuthorizedStaff && (
+            <div className="mt-4 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 p-3 text-xs text-slate-600 dark:text-slate-400">
+              {identity.isSignedIn
+                ? 'Signed in as a union member. Chapter analytics and admin tools are restricted to authorized organizers.'
+                : 'Organizer dashboards, Google Sheets sync, and exports unlock after signing in with an authorized organizer Google account.'}
+            </div>
+          )}
         </nav>
 
-        {/* Active Role / User Switcher & Firebase Auth */}
+        {/* Identity & Role-Restricted Access Footer */}
         <div className="p-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
           <div className="flex items-center gap-3">
-            {!avatarFailed ? (
+            {firebaseUser?.photoURL && !avatarFailed ? (
               <img
-                src={firebaseUser?.photoURL || leadAvatarImg}
-                alt={activeUser.name}
+                src={firebaseUser.photoURL}
+                alt={identity.displayName}
                 referrerPolicy="no-referrer"
                 onError={() => setAvatarFailed(true)}
                 className="w-9 h-9 rounded-full object-cover border border-slate-200 dark:border-slate-700 shrink-0"
               />
             ) : (
               <div className="w-9 h-9 rounded-full bg-red-700 text-white flex items-center justify-center text-xs font-bold shrink-0">
-                {activeUser.name.slice(0, 2).toUpperCase()}
+                {identity.displayName.slice(0, 2).toUpperCase()}
               </div>
             )}
             <div className="min-w-0">
               <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
-                {firebaseUser?.displayName || activeUser.name}
+                {identity.displayName}
               </div>
               <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                {activeUser.role}
+                {identity.roleLabel}
               </div>
             </div>
           </div>
 
           {firebaseUser ? (
-            <button
-              type="button"
-              onClick={handleGoogleSignOut}
-              className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              Sign Out ({firebaseUser.email?.split('@')[0]})
-            </button>
+            <div className="space-y-2">
+              {identity.isAuthorizedStaff && !sheetsAccessToken && (
+                <GoogleSignInButton
+                  onClick={handleGoogleSignIn}
+                  label="Connect Google Sheets"
+                />
+              )}
+              <button
+                type="button"
+                onClick={handleGoogleSignOut}
+                className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                Sign Out ({firebaseUser.email?.split('@')[0]})
+              </button>
+            </div>
           ) : (
-            <button
-              type="button"
+            <GoogleSignInButton
               onClick={handleGoogleSignIn}
-              className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-white transition-colors"
-            >
-              <LogIn className="w-3.5 h-3.5" />
-              Sign In with Google
-            </button>
+              label="Sign in with Google"
+            />
           )}
 
-          <div>
-            <label
-              htmlFor="role-switcher-desktop"
-              className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1"
-            >
-              Active Role &amp; Chapter View
-            </label>
-            <select
-              id="role-switcher-desktop"
-              value={activeUserId}
-              onChange={(e) => setActiveUserId(e.target.value)}
-              className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100"
-            >
-              {staff.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.role} — {s.name.split(',')[0]}
-                </option>
-              ))}
-            </select>
-          </div>
+          {/* Admin-only role preview switcher */}
+          {identity.isAdmin && (
+            <div>
+              <label
+                htmlFor="role-switcher-desktop"
+                className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1"
+              >
+                Admin Role Preview
+              </label>
+              <select
+                id="role-switcher-desktop"
+                value={previewStaffId ?? identity.actualStaffMember?.id ?? ''}
+                onChange={(e) => setPreviewStaffId(e.target.value || null)}
+                className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+              >
+                {staff.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.role} — {s.name.split(',')[0]}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
       </aside>
 
@@ -491,7 +681,7 @@ export function App() {
                 </button>
               </div>
               <nav className="mt-4 space-y-1">
-                {NAV_ITEMS.map((item) => {
+                {visibleNavItems.map((item) => {
                   const Icon = item.icon;
                   const active = activeTab === item.id;
                   return (
@@ -518,45 +708,51 @@ export function App() {
 
             <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
               {firebaseUser ? (
-                <button
-                  type="button"
-                  onClick={handleGoogleSignOut}
-                  className="w-full flex items-center justify-center gap-1.5 px-2.5 py-2 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                  Sign Out ({firebaseUser.email?.split('@')[0]})
-                </button>
+                <>
+                  {identity.isAuthorizedStaff && !sheetsAccessToken && (
+                    <GoogleSignInButton
+                      onClick={handleGoogleSignIn}
+                      label="Connect Google Sheets"
+                    />
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleGoogleSignOut}
+                    className="w-full flex items-center justify-center gap-1.5 px-2.5 py-2 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    Sign Out ({firebaseUser.email?.split('@')[0]})
+                  </button>
+                </>
               ) : (
-                <button
-                  type="button"
+                <GoogleSignInButton
                   onClick={handleGoogleSignIn}
-                  className="w-full flex items-center justify-center gap-1.5 px-2.5 py-2 text-xs font-semibold rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900"
-                >
-                  <LogIn className="w-3.5 h-3.5" />
-                  Sign In with Google
-                </button>
+                  label="Sign in with Google"
+                />
               )}
 
-              <div>
-                <label
-                  htmlFor="role-switcher-mobile"
-                  className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1"
-                >
-                  Active Role View
-                </label>
-                <select
-                  id="role-switcher-mobile"
-                  value={activeUserId}
-                  onChange={(e) => setActiveUserId(e.target.value)}
-                  className="w-full px-2.5 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100"
-                >
-                  {staff.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.role} — {s.name.split(',')[0]}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {identity.isAdmin && (
+                <div>
+                  <label
+                    htmlFor="role-switcher-mobile"
+                    className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1"
+                  >
+                    Admin Role Preview
+                  </label>
+                  <select
+                    id="role-switcher-mobile"
+                    value={previewStaffId ?? identity.actualStaffMember?.id ?? ''}
+                    onChange={(e) => setPreviewStaffId(e.target.value || null)}
+                    className="w-full px-2.5 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                  >
+                    {staff.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.role} — {s.name.split(',')[0]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -585,24 +781,23 @@ export function App() {
 
           <div className="flex items-center gap-2.5 shrink-0">
             {!firebaseUser && (
-              <button
-                type="button"
-                onClick={handleGoogleSignIn}
-                className="lg:hidden inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs font-semibold whitespace-nowrap shrink-0"
-              >
-                <LogIn className="w-3.5 h-3.5" />
-                Google Sign-In
-              </button>
+              <div className="lg:hidden">
+                <GoogleSignInButton
+                  onClick={handleGoogleSignIn}
+                  label="Sign in"
+                  compact
+                />
+              </div>
             )}
 
             <button
               type="button"
               onClick={() => setTourOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
+              aria-label="Onboarding Guide"
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
             >
               <BookOpen className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Onboarding Guide</span>
-              <span className="sm:hidden">Guide</span>
             </button>
 
             <button
@@ -643,7 +838,7 @@ export function App() {
                       setAttendance((prev) => [rec, ...prev]);
                     }
                     if (backendMode === 'express') {
-                      void fetchExpressBootstrap(activeUserId);
+                      void fetchExpressBootstrap();
                     }
                   }}
                   onPasscodeDispatched={(dispatch) => {
@@ -654,16 +849,24 @@ export function App() {
                 />
               )}
 
-              {activeTab === 'dashboard' && (
+              {activeTab === 'dashboard' && activeUser && (
                 <DashboardView
                   today={today}
                   activeUser={activeUser}
                   records={attendance}
+                  linkedSheet={linkedSheet}
+                  sheetsConnected={Boolean(sheetsAccessToken)}
+                  onSyncGoogleSheet={() => setPendingSheetAction('sync')}
+                  onOpenGoogleSheetsSetup={() => {
+                    if (activePerms?.canManageVault) {
+                      setActiveTab('vault');
+                    }
+                  }}
                   onRecordAudit={handleRecordAudit}
                 />
               )}
 
-              {activeTab === 'rbac' && (
+              {activeTab === 'rbac' && activeUser && activePerms?.canManageRbac && (
                 <RbacAccessView
                   activeUser={activeUser}
                   staff={staff}
@@ -682,13 +885,33 @@ export function App() {
                 />
               )}
 
-              {activeTab === 'vault' && (
+              {activeTab === 'vault' && activeUser && activePerms?.canManageVault && (
                 <VaultAndCloudView
                   activeUser={activeUser}
                   staff={staff}
                   attendanceCount={attendance.length}
                   backendMode={backendMode}
                   firebaseUser={firebaseUser}
+                  sheetsConnected={Boolean(sheetsAccessToken)}
+                  linkedSheet={linkedSheet}
+                  sheetBusy={sheetBusy}
+                  sheetNotice={sheetNotice}
+                  onConnectGoogleSheets={handleGoogleSignIn}
+                  onCreateGoogleSheet={() => setPendingSheetAction('create')}
+                  onLinkGoogleSheet={handleLinkGoogleSheet}
+                  onChangeSheetTab={(tab) => {
+                    if (!linkedSheet) return;
+                    const updated = { ...linkedSheet, attendanceTab: tab };
+                    saveLinkedSheetConfig(updated);
+                    setLinkedSheet(updated);
+                  }}
+                  onSyncGoogleSheet={() => setPendingSheetAction('sync')}
+                  onPullGoogleSheet={handlePullGoogleSheet}
+                  onUnlinkGoogleSheet={() => {
+                    clearLinkedSheetConfig();
+                    setLinkedSheet(null);
+                    setSheetNotice(null);
+                  }}
                   documents={documents}
                   connectors={connectors}
                   snapshots={snapshots}
@@ -713,7 +936,7 @@ export function App() {
                 />
               )}
 
-              {activeTab === 'audit' && (
+              {activeTab === 'audit' && activeUser && activePerms?.canViewAuditLog && (
                 <AuditComplianceView
                   today={today}
                   activeUser={activeUser}
@@ -725,7 +948,7 @@ export function App() {
                 />
               )}
 
-              {activeTab === 'api' && (
+              {activeTab === 'api' && activeUser && activePerms?.canManageApiKeys && (
                 <ApiIntegrationsView
                   activeUser={activeUser}
                   staff={staff}
@@ -757,8 +980,38 @@ export function App() {
         </main>
       </div>
 
+      <ConfirmSheetModal
+        open={pendingSheetAction !== null}
+        busy={sheetBusy}
+        title={
+          pendingSheetAction === 'create'
+            ? 'Create CNA Google Sheet?'
+            : 'Sync & Update Google Sheet?'
+        }
+        description={
+          pendingSheetAction === 'create'
+            ? 'This will create a new spreadsheet in your Google account and populate it with your current attendance, staff directory, and audit log.'
+            : `This will update and overwrite the ${linkedSheet?.attendanceTab ?? 'Attendance'}, Staff, and AuditLog tabs inside "${linkedSheet?.title ?? 'your linked Google Sheet'}".`
+        }
+        details={[
+          `${attendance.length} attendance check-in rows → "${linkedSheet?.attendanceTab ?? 'Attendance'}" tab`,
+          `${staff.length} organizer/chapter staff records → "Staff" tab`,
+          `${auditLogs.length} compliance audit entries → "AuditLog" tab`,
+        ]}
+        confirmLabel={
+          pendingSheetAction === 'create'
+            ? 'Confirm & Create Sheet'
+            : 'Confirm & Update Sheet'
+        }
+        onConfirm={handleConfirmSheetMutation}
+        onCancel={() => {
+          if (!sheetBusy) setPendingSheetAction(null);
+        }}
+      />
+
       <OnboardingTour
         open={tourOpen}
+        isAuthorizedStaff={identity.isAuthorizedStaff}
         onClose={() => setTourOpen(false)}
         onNavigate={(tab) => setActiveTab(tab)}
       />

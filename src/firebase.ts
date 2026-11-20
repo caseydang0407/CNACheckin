@@ -10,12 +10,43 @@ import {
 import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
+export const SCOPES = ['https://www.googleapis.com/auth/spreadsheets'] as const;
+
 const app = initializeApp(firebaseConfig);
 
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+const FIRESTORE_DATABASE_ID =
+  (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
+  'ai-studio-cnaunioncheckinc-e5edd97e-f5b0-4b64-acb8-08a390b0e68f';
+
+export const db = getFirestore(app, FIRESTORE_DATABASE_ID);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+for (const scope of SCOPES) {
+  googleProvider.addScope(scope);
+}
 googleProvider.setCustomParameters({ prompt: 'select_account' });
+
+// In-memory only cache for Google Workspace OAuth access token (never stored in localStorage/sessionStorage)
+let cachedAccessToken: string | null = null;
+const tokenListeners = new Set<(token: string | null) => void>();
+
+function notifyTokenListeners(token: string | null): void {
+  for (const listener of tokenListeners) {
+    listener(token);
+  }
+}
+
+export function getGoogleAccessToken(): string | null {
+  return cachedAccessToken;
+}
+
+export function subscribeGoogleAccessToken(listener: (token: string | null) => void): () => void {
+  tokenListeners.add(listener);
+  listener(cachedAccessToken);
+  return () => {
+    tokenListeners.delete(listener);
+  };
+}
 
 export enum OperationType {
   CREATE = 'create',
@@ -81,12 +112,25 @@ export async function testConnection(): Promise<void> {
 
 void testConnection();
 
-export async function signInWithGoogle(): Promise<User> {
+// Clear in-memory Google access token whenever user signs out
+onAuthStateChanged(auth, (user) => {
+  if (!user) {
+    cachedAccessToken = null;
+    notifyTokenListeners(null);
+  }
+});
+
+export async function signInWithGoogle(): Promise<{ user: User; accessToken: string | null }> {
   const cred = await signInWithPopup(auth, googleProvider);
-  return cred.user;
+  const oauthCred = GoogleAuthProvider.credentialFromResult(cred);
+  cachedAccessToken = oauthCred?.accessToken ?? null;
+  notifyTokenListeners(cachedAccessToken);
+  return { user: cred.user, accessToken: cachedAccessToken };
 }
 
 export async function signOutFirebase(): Promise<void> {
+  cachedAccessToken = null;
+  notifyTokenListeners(null);
   await signOut(auth);
 }
 

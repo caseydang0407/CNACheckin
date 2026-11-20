@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Download, FileSpreadsheet, FileText, Lock, Search } from 'lucide-react';
+import { Download, FileSpreadsheet, FileText, FolderSync, Lock, Search } from 'lucide-react';
 import {
   AttendanceRecord,
   ComplianceSummary,
@@ -16,11 +16,16 @@ import {
 } from '../utils/rbac';
 import { exportAttendanceCsv, exportAttendancePdfReport } from '../utils/pdfReport';
 import { RegionalHeatmap } from './RegionalHeatmap';
+import { LinkedGoogleSheetConfig } from '../services/googleSheets';
 
 interface DashboardViewProps {
   today: string;
   activeUser: StaffMember;
   records: AttendanceRecord[];
+  linkedSheet?: LinkedGoogleSheetConfig | null;
+  sheetsConnected?: boolean;
+  onSyncGoogleSheet?: () => void;
+  onOpenGoogleSheetsSetup?: () => void;
   onRecordAudit: (action: 'REPORT_EXPORTED', resource: string, details: string, branch?: RegionalBranch | 'All Branches') => void;
 }
 
@@ -28,6 +33,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   today,
   activeUser,
   records,
+  linkedSheet,
+  sheetsConnected,
+  onSyncGoogleSheet,
+  onOpenGoogleSheetsSetup,
   onRecordAudit,
 }) => {
   const perms = getPermissionsForRole(activeUser.role);
@@ -170,6 +179,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 Export CSV
               </button>
             )}
+            {perms.canManageCloudBackups && linkedSheet && sheetsConnected && onSyncGoogleSheet ? (
+              <button
+                type="button"
+                onClick={onSyncGoogleSheet}
+                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold transition-colors whitespace-nowrap shrink-0"
+              >
+                <FolderSync className="w-4 h-4" />
+                Sync to Google Sheets
+              </button>
+            ) : perms.canManageCloudBackups && onOpenGoogleSheetsSetup ? (
+              <button
+                type="button"
+                onClick={onOpenGoogleSheetsSetup}
+                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg border border-emerald-300 dark:border-emerald-800 bg-emerald-50/70 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-200 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-colors whitespace-nowrap shrink-0"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                Connect Google Sheets
+              </button>
+            ) : null}
             {perms.canExportPdf ? (
               <button
                 type="button"

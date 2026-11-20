@@ -3,6 +3,7 @@ import { ArrowRight, BookOpen, Check, X } from 'lucide-react';
 
 interface OnboardingTourProps {
   open: boolean;
+  isAuthorizedStaff: boolean;
   onClose: () => void;
   onNavigate: (tab: 'checkin' | 'dashboard' | 'rbac' | 'vault' | 'audit' | 'api') => void;
 }
@@ -20,41 +21,41 @@ const TOUR_STEPS: Array<{
       'Prevent off-site check-ins with a rotating 6-digit daily passcode. Authorized organizers request the passcode right from the Check-In screen.',
     checklist: [
       'Click "Organizer: Request Passcode of the Day" on the Check-In screen.',
-      'Enter a verified database email (e.g. caseydang0407@gmail.com or organizer@calnurses.org).',
+      'Enter an authorized organizer email from the CNA directory to receive today’s code.',
       'Members enter Name, Phone, Email once — cookies save their profile for future meetings.',
     ],
   },
   {
-    title: '02. Real-Time Dashboard & PDF Reports',
+    title: '02. Real-Time Dashboard, Heatmap & PDF Reports',
     targetTab: 'dashboard',
     summary:
-      'Monitor live arrivals across California chapters with zero check-out friction. Filter by branch, date, or keyword and export formatted PDFs.',
+      'Signed-in organizers monitor live arrivals across California chapters with zero check-out friction, filter by branch, and export formatted PDFs.',
     checklist: [
-      'Review KPIs, branch quorum bars, and hourly check-in velocity.',
+      'Review KPIs, California geospatial heatmap, and chapter quorum bars.',
       'Use customized branch/date/search filters to isolate a specific session.',
-      'Click "Export PDF Report" or "Export CSV" for immediate union distribution.',
+      'Click "Export PDF Report", "Export CSV", or "Sync to Google Sheets".',
     ],
   },
   {
-    title: '03. Role-Based Access & Branch Segregation',
+    title: '03. Google Sign-In Role Enforcement & Chapter Segregation',
     targetTab: 'rbac',
     summary:
-      'Enforce strict data segregation across Administrative Staff, Union Reps, Unit Reps, and PPC Members across all 5 California branches.',
+      'Regular members only see Check-In. Chapter leads and Administrative Staff automatically receive permissions scoped to their verified Google email.',
     checklist: [
-      'Use the Role Switcher in the top workspace bar to preview each permission scope.',
-      'Assign regional branches (San Francisco, Sacramento, Los Angeles, Irvine, San Diego).',
-      'Control which team members are eligible to request daily meeting passcodes.',
+      'Visitors and regular members see only the Member Check-In kiosk.',
+      'Union Reps, Unit Reps, and PPC Members see only their assigned regional branches.',
+      'Administrative Staff manage role permissions and branch access in Roles & Branches.',
     ],
   },
   {
-    title: '04. AES-256-GCM Encrypted Vault & Google Drive Backups',
+    title: '04. Google Sheets Live Sync & E2EE Document Vault',
     targetTab: 'vault',
     summary:
-      'Encrypt confidential PPC logs and bargaining minutes locally in your browser before cloud storage, and sync snapshots to Google Drive.',
+      'Connect your Google account to sync live attendance and audit logs to Google Sheets, and encrypt sensitive files locally with AES-256-GCM.',
     checklist: [
-      'Encrypt documents locally using PBKDF2-SHA256 + AES-256-GCM.',
-      'Link your Google account (caseydang0407@gmail.com) and run Drive backups.',
-      'Review Firebase Firestore security rules & GitHub Pages deployment YAML.',
+      'Create a new CNA Google Sheet or link an existing spreadsheet by URL.',
+      'Sync attendance, staff directory, and audit history with explicit confirmation.',
+      'Encrypt confidential PPC logs locally using PBKDF2-SHA256 + AES-256-GCM.',
     ],
   },
   {
@@ -71,6 +72,7 @@ const TOUR_STEPS: Array<{
 
 export const OnboardingTour: React.FC<OnboardingTourProps> = ({
   open,
+  isAuthorizedStaff,
   onClose,
   onNavigate,
 }) => {
@@ -141,16 +143,22 @@ export const OnboardingTour: React.FC<OnboardingTourProps> = ({
         </div>
 
         <div className="px-6 py-4 bg-slate-50 dark:bg-slate-950/60 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
-          <button
-            type="button"
-            onClick={() => {
-              onNavigate(step.targetTab);
-              onClose();
-            }}
-            className="text-xs font-semibold text-red-700 dark:text-red-400 hover:underline"
-          >
-            Open This Section Now
-          </button>
+          {isAuthorizedStaff || step.targetTab === 'checkin' ? (
+            <button
+              type="button"
+              onClick={() => {
+                onNavigate(step.targetTab);
+                onClose();
+              }}
+              className="text-xs font-semibold text-red-700 dark:text-red-400 hover:underline"
+            >
+              Open This Section Now
+            </button>
+          ) : (
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              Sign in as an authorized organizer to open this section.
+            </span>
+          )}
 
           <div className="flex items-center gap-2">
             {stepIndex > 0 && (

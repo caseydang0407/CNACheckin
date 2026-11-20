@@ -3,11 +3,15 @@ import {
   Cloud,
   Copy,
   Download,
+  ExternalLink,
   FileLock2,
+  FileSpreadsheet,
   FolderSync,
   Key,
   Lock,
+  RefreshCw,
   ShieldCheck,
+  Unlink,
   Unlock,
   Upload,
 } from 'lucide-react';
@@ -27,6 +31,8 @@ import {
   triggerBackupSnapshotFirebase,
   updateConnectorFirebase,
 } from '../services/unionBackend';
+import { LinkedGoogleSheetConfig } from '../services/googleSheets';
+import { GoogleSignInButton } from './GoogleSignInButton';
 
 interface VaultAndCloudViewProps {
   activeUser: StaffMember;
@@ -34,6 +40,17 @@ interface VaultAndCloudViewProps {
   attendanceCount: number;
   backendMode: 'firebase' | 'express' | 'static';
   firebaseUser: User | null;
+  sheetsConnected: boolean;
+  linkedSheet: LinkedGoogleSheetConfig | null;
+  sheetBusy: boolean;
+  sheetNotice: { type: 'success' | 'error'; text: string } | null;
+  onConnectGoogleSheets: () => void;
+  onCreateGoogleSheet: () => void;
+  onLinkGoogleSheet: (urlOrId: string) => void;
+  onChangeSheetTab: (tab: string) => void;
+  onSyncGoogleSheet: () => void;
+  onPullGoogleSheet: () => void;
+  onUnlinkGoogleSheet: () => void;
   documents: EncryptedDocument[];
   connectors: CloudConnector[];
   snapshots: CloudBackupSnapshot[];
@@ -98,6 +115,17 @@ export const VaultAndCloudView: React.FC<VaultAndCloudViewProps> = ({
   attendanceCount,
   backendMode,
   firebaseUser,
+  sheetsConnected,
+  linkedSheet,
+  sheetBusy,
+  sheetNotice,
+  onConnectGoogleSheets,
+  onCreateGoogleSheet,
+  onLinkGoogleSheet,
+  onChangeSheetTab,
+  onSyncGoogleSheet,
+  onPullGoogleSheet,
+  onUnlinkGoogleSheet,
   documents,
   connectors,
   snapshots,
@@ -127,8 +155,9 @@ export const VaultAndCloudView: React.FC<VaultAndCloudViewProps> = ({
 
   // Cloud state
   const [syncingProvider, setSyncingProvider] = useState<string | null>(null);
+  const [sheetUrlInput, setSheetUrlInput] = useState('');
   const [googleEmailInput, setGoogleEmailInput] = useState(
-    connectors.find((c) => c.provider === 'Google Drive')?.accountLabel ?? 'caseydang0407@gmail.com'
+    connectors.find((c) => c.provider === 'Google Drive')?.accountLabel ?? activeUser.email
   );
   const [showDeployBlueprint, setShowDeployBlueprint] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -630,17 +659,17 @@ export const VaultAndCloudView: React.FC<VaultAndCloudViewProps> = ({
         )}
       </div>
 
-      {/* Section 2: Google Drive & Third-Party Cloud Storage Sync */}
+      {/* Section 2: Live Google Sheets Database Sync & Cloud Storage */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <h2 className="text-lg font-bold text-slate-900 dark:text-slate-50 flex items-center gap-2">
-              <Cloud className="w-5 h-5 text-red-700 dark:text-red-400" />
-              Google Drive &amp; Third-Party Cloud Storage Sync
+              <FileSpreadsheet className="w-5 h-5 text-emerald-700 dark:text-emerald-400" />
+              Live Google Sheets Database Sync &amp; Cloud Storage
             </h2>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-              Link your Google account for encrypted Drive backups and mirror rosters across
-              enterprise cloud platforms.
+              Connect your Google account to create or link a live Google Sheet for dynamic
+              attendance, roster, and audit storage across devices.
             </p>
           </div>
           <button
@@ -652,6 +681,153 @@ export const VaultAndCloudView: React.FC<VaultAndCloudViewProps> = ({
               ? 'Hide GitHub Pages & Firebase Blueprint'
               : 'GitHub Pages & Firebase Blueprint'}
           </button>
+        </div>
+
+        {/* Live Google Sheets Control Card */}
+        <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/40 dark:bg-emerald-950/20 p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-bold text-slate-900 dark:text-slate-50 flex items-center gap-2">
+                <Cloud className="w-4 h-4 text-emerald-700 dark:text-emerald-400" />
+                Google Sheets Live Integration
+              </div>
+              <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                {sheetsConnected
+                  ? `Connected as ${firebaseUser?.email ?? activeUser.email}. Writes require explicit confirmation.`
+                  : 'Connect Google Sheets in this browser session to create, read, or sync spreadsheets.'}
+              </p>
+            </div>
+            {!sheetsConnected && (
+              <div className="w-full sm:w-auto">
+                <GoogleSignInButton
+                  onClick={onConnectGoogleSheets}
+                  label="Connect Google Sheets"
+                  compact
+                />
+              </div>
+            )}
+          </div>
+
+          {sheetNotice && (
+            <div
+              className={`rounded-lg px-3.5 py-2.5 text-xs font-medium border ${
+                sheetNotice.type === 'success'
+                  ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200'
+                  : 'bg-red-50 dark:bg-red-950/50 border-red-200 dark:border-red-800 text-red-900 dark:text-red-200'
+              }`}
+            >
+              {sheetNotice.text}
+            </div>
+          )}
+
+          {linkedSheet ? (
+            <div className="rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 space-y-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
+                    {linkedSheet.title}
+                  </div>
+                  <div className="text-xs font-mono text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                    Sheet ID: {linkedSheet.spreadsheetId}
+                    {linkedSheet.lastSyncedAt
+                      ? ` · Synced ${new Date(linkedSheet.lastSyncedAt).toLocaleTimeString('en-US', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}`
+                      : ''}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <a
+                    href={linkedSheet.spreadsheetUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    Open Sheet
+                  </a>
+                  <button
+                    type="button"
+                    onClick={onUnlinkGoogleSheet}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-red-700"
+                  >
+                    <Unlink className="w-3.5 h-3.5" />
+                    Unlink
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2.5 pt-2 border-t border-slate-200 dark:border-slate-800">
+                <label className="text-xs font-medium text-slate-600 dark:text-slate-400 flex items-center gap-2">
+                  <span>Attendance Tab:</span>
+                  <select
+                    value={linkedSheet.attendanceTab}
+                    onChange={(e) => onChangeSheetTab(e.target.value)}
+                    className="px-2.5 py-1 rounded border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs text-slate-900 dark:text-slate-100"
+                  >
+                    {linkedSheet.availableTabs.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="flex flex-wrap items-center gap-2 ml-auto">
+                  <button
+                    type="button"
+                    disabled={!sheetsConnected || sheetBusy}
+                    onClick={onPullGoogleSheet}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-semibold text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-45"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Load from Sheet
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!sheetsConnected || sheetBusy}
+                    onClick={onSyncGoogleSheet}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold disabled:opacity-45"
+                  >
+                    <FolderSync className="w-3.5 h-3.5" />
+                    {sheetBusy ? 'Syncing...' : 'Sync Attendance & Audit to Sheet'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-center">
+              <div className="lg:col-span-4">
+                <button
+                  type="button"
+                  disabled={!sheetsConnected || sheetBusy}
+                  onClick={onCreateGoogleSheet}
+                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold disabled:opacity-45 transition-colors"
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                  Create New CNA Google Sheet
+                </button>
+              </div>
+              <div className="lg:col-span-8 flex gap-2">
+                <input
+                  type="text"
+                  value={sheetUrlInput}
+                  onChange={(e) => setSheetUrlInput(e.target.value)}
+                  placeholder="Or paste an existing Google Sheet URL or Spreadsheet ID..."
+                  className="flex-1 px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                />
+                <button
+                  type="button"
+                  disabled={!sheetsConnected || sheetBusy || !sheetUrlInput.trim()}
+                  onClick={() => onLinkGoogleSheet(sheetUrlInput)}
+                  className="px-3.5 py-2 rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs font-semibold disabled:opacity-45 whitespace-nowrap"
+                >
+                  Link Sheet
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Google Account Link Bar */}
@@ -702,8 +878,8 @@ export const VaultAndCloudView: React.FC<VaultAndCloudViewProps> = ({
             >
               <FolderSync className="w-4 h-4" />
               {syncingProvider === 'Google Drive'
-                ? 'Syncing Drive...'
-                : 'Run Google Drive Backup Now'}
+                ? 'Syncing Snapshot...'
+                : 'Log Encrypted Backup Snapshot'}
             </button>
           )}
         </div>

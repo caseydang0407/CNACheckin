@@ -99,8 +99,11 @@ export const CheckInPortal: React.FC<CheckInPortalProps> = ({
       setUnit(saved.unit || 'Medical-Surgical');
       setMeetingTitle(saved.meetingTitle || 'Union Rep Meeting');
       setMemberRole(saved.memberRole || 'Union Member (RN)');
+    } else if (firebaseUser) {
+      if (firebaseUser.displayName) setName((prev) => prev || firebaseUser.displayName || '');
+      if (firebaseUser.email) setEmail((prev) => prev || firebaseUser.email || '');
     }
-  }, []);
+  }, [firebaseUser]);
 
   const handleClearSavedCookie = () => {
     clearMemberProfileCookie();
@@ -409,10 +412,8 @@ export const CheckInPortal: React.FC<CheckInPortalProps> = ({
                 {showPasscodePanel && (
                   <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-700 space-y-3">
                     <p className="text-xs text-slate-600 dark:text-slate-300">
-                      Enter an authorized chapter administrator or organizer email (for example{' '}
-                      <span className="font-mono">caseydang0407@gmail.com</span> or{' '}
-                      <span className="font-mono">organizer@calnurses.org</span>). If matched in the
-                      database, today’s passcode will be emailed immediately.
+                      Enter an authorized chapter administrator or organizer email registered in the
+                      database. If matched, today’s passcode will be dispatched immediately.
                     </p>
                     <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
                       <div className="sm:col-span-6">
@@ -424,7 +425,7 @@ export const CheckInPortal: React.FC<CheckInPortalProps> = ({
                           type="email"
                           value={adminEmail}
                           onChange={(e) => setAdminEmail(e.target.value)}
-                          placeholder="caseydang0407@gmail.com"
+                          placeholder="organizer@calnurses.org"
                           className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-red-600"
                         />
                       </div>
@@ -749,7 +750,7 @@ export const CheckInPortal: React.FC<CheckInPortalProps> = ({
             <div className="mt-5 pt-4 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs text-slate-600 dark:text-slate-400">
               <span>Last passcode email dispatched</span>
               <span className="font-mono text-slate-900 dark:text-slate-200">
-                {latestDispatched.requestedByEmail}
+                {firebaseUser ? latestDispatched.requestedByEmail : 'Verified Chapter Organizer'}
               </span>
             </div>
           )}
