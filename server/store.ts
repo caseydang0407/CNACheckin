@@ -627,11 +627,26 @@ class UnionStore {
   public updateStaffMember(
     actor: StaffMember,
     memberId: string,
-    updates: Partial<Pick<StaffMember, 'role' | 'assignedBranches' | 'active' | 'canReceivePasscode'>>
+    updates: Partial<
+      Pick<
+        StaffMember,
+        'name' | 'email' | 'facility' | 'role' | 'assignedBranches' | 'active' | 'canReceivePasscode'
+      >
+    >
   ): StaffMember | null {
     const target = this.state.staff.find((s) => s.id === memberId);
     if (!target) return null;
-    Object.assign(target, updates);
+    if (updates.name !== undefined) target.name = updates.name.trim() || target.name;
+    if (updates.email !== undefined) target.email = updates.email.trim() || target.email;
+    if (updates.facility !== undefined) target.facility = updates.facility.trim() || target.facility;
+    if (updates.role !== undefined) target.role = updates.role;
+    if (updates.assignedBranches !== undefined && updates.assignedBranches.length > 0) {
+      target.assignedBranches = updates.assignedBranches;
+    }
+    if (updates.active !== undefined) target.active = updates.active;
+    if (updates.canReceivePasscode !== undefined) target.canReceivePasscode = updates.canReceivePasscode;
+    target.lastActiveAt = new Date().toISOString();
+
     this.appendAudit({
       actorName: actor.name,
       actorEmail: actor.email,
@@ -681,6 +696,49 @@ class UnionStore {
     this.saveToDisk(this.state);
     this.broadcast('staff:updated', created);
     return created;
+  }
+
+  public deleteStaffMember(actor: StaffMember, memberId: string): StaffMember | null {
+    const idx = this.state.staff.findIndex((s) => s.id === memberId);
+    if (idx === -1) return null;
+    const [removed] = this.state.staff.splice(idx, 1);
+    this.appendAudit({
+      actorName: actor.name,
+      actorEmail: actor.email,
+      actorRole: actor.role,
+      branch: 'All Branches',
+      action: 'RBAC_DELETED',
+      resource: `${removed.name} (${removed.email})`,
+      details: `Removed ${removed.role} from authorized chapter directory.`,
+    });
+    this.saveToDisk(this.state);
+    this.broadcast('staff:updated', { deletedId: memberId });
+    return removed;
+  }
+
+  public deleteAttendanceRecords(actor: StaffMember, recordIds: string[]): number {
+    const idSet = new Set(recordIds);
+    const removed = this.state.attendance.filter((rec) => idSet.has(rec.id));
+    if (removed.length === 0) return 0;
+    this.state.attendance = this.state.attendance.filter((rec) => !idSet.has(rec.id));
+    this.appendAudit({
+      actorName: actor.name,
+      actorEmail: actor.email,
+      actorRole: actor.role,
+      branch: removed.length === 1 ? removed[0].branch : 'All Branches',
+      action: 'ATTENDANCE_DELETED',
+      resource:
+        removed.length === 1
+          ? `${removed[0].name} (${removed[0].meetingTitle})`
+          : `${removed.length} Check-In Roster Records`,
+      details:
+        removed.length === 1
+          ? `Deleted verified check-in record for ${removed[0].name} (${removed[0].dateKey}).`
+          : `Bulk deleted ${removed.length} check-in roster entries.`,
+    });
+    this.saveToDisk(this.state);
+    this.broadcast('attendance:deleted', { recordIds });
+    return removed.length;
   }
 
   public addEncryptedDocument(

@@ -67,18 +67,22 @@ const sampleRecords: AttendanceRecord[] = [
   },
 ];
 
-test('Administrative Staff can access all 5 branches and manage RBAC', () => {
+test('Administrative Staff can access all 5 branches, manage RBAC, and delete attendance roster data', () => {
   const perms = getPermissionsForRole('Administrative Staff');
   assert.equal(perms.canViewAllBranches, true);
   assert.equal(perms.canManageRbac, true);
+  assert.equal(perms.canDeleteAttendance, true);
   assert.equal(getAccessibleBranches(adminUser).length, 5);
   assert.equal(canAccessBranch(adminUser, 'San Diego'), true);
 });
 
-test('Unit Representative is segregated to assigned branch only', () => {
+test('Unit Representative is segregated to assigned branch only and cannot delete roster data', () => {
   const perms = getPermissionsForRole('Unit Representative');
   assert.equal(perms.canViewAllBranches, false);
   assert.equal(perms.canManageRbac, false);
+  assert.equal(perms.canDeleteAttendance, false);
+  assert.equal(getPermissionsForRole('Union Representative').canDeleteAttendance, false);
+  assert.equal(getPermissionsForRole('PPC Member').canDeleteAttendance, false);
   assert.deepEqual(getAccessibleBranches(irvineUnitRep), ['Irvine']);
   assert.equal(canAccessBranch(irvineUnitRep, 'San Francisco'), false);
   assert.equal(canAccessBranch(irvineUnitRep, 'Irvine'), true);

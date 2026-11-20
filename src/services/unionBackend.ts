@@ -1,5 +1,6 @@
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -923,7 +924,12 @@ export async function recordAuditFirebase(params: {
 
 export async function updateStaffFirebase(params: {
   memberId: string;
-  patch: Partial<Pick<StaffMember, 'role' | 'assignedBranches' | 'active' | 'canReceivePasscode'>>;
+  patch: Partial<
+    Pick<
+      StaffMember,
+      'name' | 'email' | 'facility' | 'role' | 'assignedBranches' | 'active' | 'canReceivePasscode'
+    >
+  >;
 }): Promise<void> {
   try {
     await updateDoc(doc(db, 'staff', params.memberId), {
@@ -958,6 +964,55 @@ export async function createStaffFirebase(params: {
     handleFirestoreError(error, OperationType.CREATE, `staff/${id}`);
   }
   return created;
+}
+
+export async function deleteStaffFirebase(params: {
+  member: StaffMember;
+  actor: StaffMember;
+  staff: StaffMember[];
+}): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'staff', params.member.id));
+    await recordAuditFirebase({
+      actor: params.actor,
+      action: 'RBAC_DELETED',
+      resource: `${params.member.name} (${params.member.email})`,
+      details: `Removed ${params.member.role} from authorized chapter directory.`,
+      branch: 'All Branches',
+      staff: params.staff,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `staff/${params.member.id}`);
+  }
+}
+
+export async function deleteAttendanceRecordsFirebase(params: {
+  recordIds: string[];
+  actor: StaffMember;
+  staff: StaffMember[];
+  summaryLabel: string;
+  branch?: RegionalBranch | 'All Branches';
+}): Promise<void> {
+  try {
+    for (let i = 0; i < params.recordIds.length; i += 400) {
+      const chunk = params.recordIds.slice(i, i + 400);
+      const batch = writeBatch(db);
+      for (const id of chunk) {
+        batch.delete(doc(db, 'attendance', id));
+      }
+      await batch.commit();
+    }
+    await recordAuditFirebase({
+      actor: params.actor,
+      action: 'ATTENDANCE_DELETED',
+      resource: params.summaryLabel,
+      details: `Deleted ${params.recordIds.length} verified check-in record(s) from Attendance Analytics.`,
+      branch: params.branch ?? 'All Branches',
+      staff: params.staff,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `attendance/${params.recordIds[0] ?? 'bulk'}`);
+  }
 }
 
 export async function createEncryptedDocFirebase(params: {

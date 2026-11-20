@@ -66,6 +66,18 @@ test('firestore.rules includes default-deny net, verified email gate, and all bl
   for (const name of collectionNames) {
     assert.ok(rulesSource.includes(`match /${name}/`), `Missing match block for ${name}`);
   }
+  assert.ok(
+    rulesSource.includes("'name', 'email', 'facility', 'role', 'assignedBranches'"),
+    'Staff update rule must permit editing name, email, facility, role, and assignedBranches'
+  );
+  assert.ok(
+    rulesSource.includes('allow delete: if isValidId(staffId) && isBootstrappedAdmin();'),
+    'Staff delete rule must be gated by bootstrapped admin'
+  );
+  assert.ok(
+    rulesSource.includes('allow delete: if isValidId(recordId) && isBootstrappedAdmin();'),
+    'Attendance delete rule must be gated by bootstrapped admin'
+  );
 });
 
 test('Dirty Dozen adversarial attendance payloads are rejected', () => {

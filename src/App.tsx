@@ -50,6 +50,7 @@ import {
   type User,
 } from './firebase';
 import {
+  deleteAttendanceRecordsFirebase,
   ensureFirestoreSeeded,
   getTodayDateKeyClient,
   loadStaticWorkspace,
@@ -232,6 +233,7 @@ export function App() {
           void fetchExpressBootstrap();
         };
         sseSource.addEventListener('attendance:new', refresh);
+        sseSource.addEventListener('attendance:deleted', refresh);
         sseSource.addEventListener('audit:new', refresh);
         sseSource.addEventListener('passcode:dispatched', refresh);
         sseSource.addEventListener('document:new', refresh);
@@ -397,6 +399,53 @@ export function App() {
         integrityHash: `${Date.now().toString(16)}local`,
       };
       setAuditLogs((prev) => [entry, ...prev]);
+    }
+  };
+
+  const handleDeleteAttendanceRecords = async (
+    recordIds: string[],
+    summaryLabel: string,
+    branch: RegionalBranch | 'All Branches' = 'All Branches'
+  ) => {
+    if (!activeUser || recordIds.length === 0) return;
+    const idSet = new Set(recordIds);
+    if (backendMode === 'express') {
+      const res =
+        recordIds.length === 1
+          ? await fetch(`/api/v1/attendance/${encodeURIComponent(recordIds[0])}`, {
+              method: 'DELETE',
+              headers: { 'x-actor-id': activeUser.id },
+            })
+          : await fetch('/api/v1/attendance/bulk-delete', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-actor-id': activeUser.id,
+              },
+              body: JSON.stringify({ ids: recordIds }),
+            });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to delete check-in roster records.');
+      }
+      setAttendance((prev) => prev.filter((r) => !idSet.has(r.id)));
+      void fetchExpressBootstrap();
+    } else if (backendMode === 'firebase' && firebaseUser) {
+      await deleteAttendanceRecordsFirebase({
+        recordIds,
+        actor: activeUser,
+        staff,
+        summaryLabel,
+        branch,
+      });
+    } else {
+      setAttendance((prev) => prev.filter((r) => !idSet.has(r.id)));
+      await handleRecordAudit(
+        'ATTENDANCE_DELETED',
+        summaryLabel,
+        `Deleted ${recordIds.length} check-in record(s) from Attendance Analytics.`,
+        branch
+      );
     }
   };
 
@@ -862,6 +911,9 @@ export function App() {
                       setActiveTab('vault');
                     }
                   }}
+                  onDeleteRecords={
+                    activePerms?.canDeleteAttendance ? handleDeleteAttendanceRecords : undefined
+                  }
                   onRecordAudit={handleRecordAudit}
                 />
               )}
@@ -876,10 +928,39 @@ export function App() {
                     if (backendMode !== 'firebase') {
                       setStaff((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
                     }
+                    if (backendMode !== 'express') {
+                      void handleRecordAudit(
+                        'RBAC_UPDATED',
+                        `${updated.name} (${updated.email})`,
+                        `Updated ${updated.role} profile & permissions (${updated.assignedBranches.join(', ')}).`
+                      );
+                    }
                   }}
                   onStaffCreated={(created) => {
                     if (backendMode !== 'firebase') {
                       setStaff((prev) => [...prev, created]);
+                    }
+                    if (backendMode !== 'express') {
+                      void handleRecordAudit(
+                        'RBAC_UPDATED',
+                        `${created.name} (${created.email})`,
+                        `Provisioned ${created.role} (${created.assignedBranches.join(', ')}).`
+                      );
+                    }
+                  }}
+                  onStaffDeleted={(memberId, removed) => {
+                    if (previewStaffId === memberId) {
+                      setPreviewStaffId(null);
+                    }
+                    if (backendMode !== 'firebase') {
+                      setStaff((prev) => prev.filter((s) => s.id !== memberId));
+                    }
+                    if (backendMode === 'static') {
+                      void handleRecordAudit(
+                        'RBAC_DELETED',
+                        `${removed.name} (${removed.email})`,
+                        `Removed ${removed.role} from authorized chapter directory.`
+                      );
                     }
                   }}
                 />

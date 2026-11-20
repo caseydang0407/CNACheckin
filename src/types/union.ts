@@ -49,6 +49,7 @@ export interface RolePermissions {
   canExportCsv: boolean;
   canRequestPasscode: boolean;
   canManageRbac: boolean;
+  canDeleteAttendance: boolean;
   canManageVault: boolean;
   canViewAuditLog: boolean;
   canManageCloudBackups: boolean;
@@ -104,10 +105,12 @@ export interface AuditLogEntry {
   branch: RegionalBranch | 'All Branches';
   action:
     | 'MEMBER_CHECKIN'
+    | 'ATTENDANCE_DELETED'
     | 'PASSCODE_REQUESTED'
     | 'PASSCODE_REJECTED'
     | 'REPORT_EXPORTED'
     | 'RBAC_UPDATED'
+    | 'RBAC_DELETED'
     | 'DOCUMENT_ENCRYPTED'
     | 'DOCUMENT_DECRYPTED'
     | 'DRIVE_BACKUP_SYNCED'

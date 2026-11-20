@@ -144,6 +144,30 @@ async function startServer() {
     });
   });
 
+  app.delete('/api/v1/attendance/:id', (req, res) => {
+    const actor = resolveActor(req);
+    const perms = getPermissionsForRole(actor.role);
+    if (!perms.canDeleteAttendance) {
+      return res.status(403).json({ error: 'Only Administrative Staff can delete roster entries.' });
+    }
+    const deletedCount = unionStore.deleteAttendanceRecords(actor, [req.params.id]);
+    if (deletedCount === 0) {
+      return res.status(404).json({ error: 'Attendance record not found.' });
+    }
+    return res.json({ deletedCount, deletedIds: [req.params.id] });
+  });
+
+  app.post('/api/v1/attendance/bulk-delete', (req, res) => {
+    const actor = resolveActor(req);
+    const perms = getPermissionsForRole(actor.role);
+    if (!perms.canDeleteAttendance) {
+      return res.status(403).json({ error: 'Only Administrative Staff can delete roster entries.' });
+    }
+    const ids = Array.isArray(req.body?.ids) ? (req.body.ids as string[]) : [];
+    const deletedCount = unionStore.deleteAttendanceRecords(actor, ids);
+    return res.json({ deletedCount, deletedIds: ids });
+  });
+
   // REST API: Compliance summary
   app.get('/api/v1/reports/compliance', (req, res) => {
     const actor = resolveActor(req);
@@ -209,6 +233,20 @@ async function startServer() {
     }
     const created = unionStore.addStaffMember(actor, req.body);
     return res.status(201).json({ staff: created });
+  });
+
+  app.delete('/api/v1/staff/:id', (req, res) => {
+    const actor = resolveActor(req);
+    const perms = getPermissionsForRole(actor.role);
+    if (!perms.canManageRbac) {
+      return res.status(403).json({ error: 'Only Administrative Staff can remove staff accounts.' });
+    }
+    if (actor.id === req.params.id) {
+      return res.status(400).json({ error: 'You cannot delete your own active admin account.' });
+    }
+    const removed = unionStore.deleteStaffMember(actor, req.params.id);
+    if (!removed) return res.status(404).json({ error: 'Staff member not found.' });
+    return res.json({ deleted: removed });
   });
 
   // Encrypted Vault Documents

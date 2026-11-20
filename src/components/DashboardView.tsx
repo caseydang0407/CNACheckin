@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Download, FileSpreadsheet, FileText, FolderSync, Lock, Search } from 'lucide-react';
+import { Download, FileSpreadsheet, FileText, FolderSync, Lock, Search, Trash2, X } from 'lucide-react';
 import {
   AttendanceRecord,
   ComplianceSummary,
@@ -26,6 +26,7 @@ interface DashboardViewProps {
   sheetsConnected?: boolean;
   onSyncGoogleSheet?: () => void;
   onOpenGoogleSheetsSetup?: () => void;
+  onDeleteRecords?: (recordIds: string[], summaryLabel: string, branch?: RegionalBranch | 'All Branches') => Promise<void>;
   onRecordAudit: (action: 'REPORT_EXPORTED', resource: string, details: string, branch?: RegionalBranch | 'All Branches') => void;
 }
 
@@ -37,6 +38,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   sheetsConnected,
   onSyncGoogleSheet,
   onOpenGoogleSheetsSetup,
+  onDeleteRecords,
   onRecordAudit,
 }) => {
   const perms = getPermissionsForRole(activeUser.role);
@@ -45,7 +47,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [branchFilter, setBranchFilter] = useState<RegionalBranch | 'All Branches'>('All Branches');
   const [dateFilter, setDateFilter] = useState<string>(today);
   const [search, setSearch] = useState('');
-  const [exportMessage, setExportMessage] = useState<string | null>(null);
+  const [exportMessage, setExportMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [pendingDelete, setPendingDelete] = useState<{
+    ids: string[];
+    label: string;
+    branch?: RegionalBranch | 'All Branches';
+  } | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   // Ensure selected branch stays within accessible scope when switching roles
   const effectiveBranchFilter: RegionalBranch | 'All Branches' =
@@ -135,7 +144,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       `Exported PDF attendance report (${filteredRecords.length} records, scope: ${effectiveBranchFilter}).`,
       effectiveBranchFilter
     );
-    setExportMessage(`Downloaded ${fileName}`);
+    setExportMessage({ type: 'success', text: `Downloaded ${fileName}` });
     setTimeout(() => setExportMessage(null), 4000);
   };
 
@@ -147,8 +156,53 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       `Exported CSV attendance roster (${filteredRecords.length} records).`,
       effectiveBranchFilter
     );
-    setExportMessage(`Downloaded ${fileName}`);
+    setExportMessage({ type: 'success', text: `Downloaded ${fileName}` });
     setTimeout(() => setExportMessage(null), 4000);
+  };
+
+  const canDeleteRows = Boolean(perms.canDeleteAttendance && onDeleteRecords);
+  const filteredIdSet = useMemo(() => new Set(filteredRecords.map((r) => r.id)), [filteredRecords]);
+  const visibleSelectedIds = useMemo(
+    () => selectedIds.filter((id) => filteredIdSet.has(id)),
+    [selectedIds, filteredIdSet]
+  );
+  const allFilteredSelected =
+    filteredRecords.length > 0 && visibleSelectedIds.length === filteredRecords.length;
+
+  const toggleSelectAll = () => {
+    if (allFilteredSelected) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(filteredRecords.map((r) => r.id));
+    }
+  };
+
+  const toggleSelectRow = (id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!pendingDelete || !onDeleteRecords) return;
+    setDeleting(true);
+    try {
+      await onDeleteRecords(pendingDelete.ids, pendingDelete.label, pendingDelete.branch);
+      setSelectedIds((prev) => prev.filter((id) => !pendingDelete.ids.includes(id)));
+      setExportMessage({
+        type: 'success',
+        text: `Deleted ${pendingDelete.ids.length} check-in record(s) from roster.`,
+      });
+      setTimeout(() => setExportMessage(null), 4000);
+    } catch (err) {
+      setExportMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Unable to delete check-in roster records.',
+      });
+    } finally {
+      setDeleting(false);
+      setPendingDelete(null);
+    }
   };
 
   return (
@@ -217,8 +271,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
 
         {exportMessage && (
-          <div className="mt-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 px-3.5 py-2 text-xs font-medium text-emerald-800 dark:text-emerald-200">
-            {exportMessage}
+          <div
+            className={`mt-3 rounded-lg border px-3.5 py-2 text-xs font-medium ${
+              exportMessage.type === 'error'
+                ? 'bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-900 text-red-800 dark:text-red-200'
+                : 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-900 text-emerald-800 dark:text-emerald-200'
+            }`}
+          >
+            {exportMessage.text}
           </div>
         )}
 
@@ -427,13 +487,31 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* Live Attendance Table */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
             Verified Member Check-In Roster ({filteredRecords.length})
           </h2>
-          <span className="text-xs text-slate-500 dark:text-slate-400">
-            Check-in only · Cookies enabled for repeat visits
-          </span>
+          <div className="flex flex-wrap items-center gap-3">
+            {canDeleteRows && visibleSelectedIds.length > 0 && (
+              <button
+                type="button"
+                onClick={() =>
+                  setPendingDelete({
+                    ids: visibleSelectedIds,
+                    label: `${visibleSelectedIds.length} selected check-in records`,
+                    branch: effectiveBranchFilter,
+                  })
+                }
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-700 hover:bg-red-800 text-white text-xs font-semibold transition-colors whitespace-nowrap"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete Selected ({visibleSelectedIds.length})
+              </button>
+            )}
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              Check-in only · Cookies enabled for repeat visits
+            </span>
+          </div>
         </div>
 
         {filteredRecords.length === 0 ? (
@@ -450,6 +528,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <table className="w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 font-semibold text-slate-600 dark:text-slate-300">
+                  {canDeleteRows && (
+                    <th className="py-2.5 pl-4 pr-2 w-8">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all visible roster rows"
+                        checked={allFilteredSelected}
+                        onChange={toggleSelectAll}
+                        className="h-4 w-4 rounded border-slate-300 text-red-700 focus:ring-red-600"
+                      />
+                    </th>
+                  )}
                   <th className="py-2.5 px-3">Member Name</th>
                   <th className="py-2.5 px-3">Role</th>
                   <th className="py-2.5 px-3">Meeting</th>
@@ -458,6 +547,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <th className="py-2.5 px-3">Phone</th>
                   <th className="py-2.5 px-3">Email</th>
                   <th className="py-2.5 px-3 text-right">Checked In</th>
+                  {canDeleteRows && <th className="py-2.5 px-3 text-right">Actions</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
@@ -466,6 +556,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     key={rec.id}
                     className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors"
                   >
+                    {canDeleteRows && (
+                      <td className="py-2.5 pl-4 pr-2">
+                        <input
+                          type="checkbox"
+                          aria-label={`Select check-in for ${rec.name}`}
+                          checked={visibleSelectedIds.includes(rec.id)}
+                          onChange={() => toggleSelectRow(rec.id)}
+                          className="h-4 w-4 rounded border-slate-300 text-red-700 focus:ring-red-600"
+                        />
+                      </td>
+                    )}
                     <td className="py-2.5 px-3 font-medium text-slate-900 dark:text-slate-100 whitespace-nowrap">
                       {rec.name}
                     </td>
@@ -494,6 +595,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         minute: '2-digit',
                       })}
                     </td>
+                    {canDeleteRows && (
+                      <td className="py-2.5 px-3 text-right whitespace-nowrap">
+                        <button
+                          type="button"
+                          aria-label={`Delete check-in for ${rec.name}`}
+                          onClick={() =>
+                            setPendingDelete({
+                              ids: [rec.id],
+                              label: `${rec.name} (${rec.meetingTitle})`,
+                              branch: rec.branch,
+                            })
+                          }
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-red-200 dark:border-red-900/70 text-[11px] font-semibold text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          Delete
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -501,6 +621,60 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         )}
       </div>
+
+      {/* Confirm Delete Roster Data Modal */}
+      {pendingDelete && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-roster-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4"
+        >
+          <div className="w-full max-w-md rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-800">
+              <h3 id="delete-roster-title" className="text-sm font-bold text-slate-900 dark:text-slate-50">
+                Delete Check-In Roster Data?
+              </h3>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => setPendingDelete(null)}
+                aria-label="Cancel deletion"
+                className="p-1 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-2 text-sm text-slate-700 dark:text-slate-300">
+              <p>
+                Permanently remove <strong>{pendingDelete.label}</strong> from the Verified Member
+                Check-In Roster?
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                This updates branch quorum metrics and logs the deletion in the audit trail.
+              </p>
+            </div>
+            <div className="px-5 py-3.5 bg-slate-50 dark:bg-slate-950/60 border-t border-slate-200 dark:border-slate-800 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => setPendingDelete(null)}
+                className="px-3.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={handleConfirmDelete}
+                className="px-4 py-2 rounded-lg bg-red-700 hover:bg-red-800 text-white text-xs font-semibold disabled:opacity-50"
+              >
+                {deleting ? 'Deleting...' : 'Delete Roster Data'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

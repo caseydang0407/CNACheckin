@@ -157,6 +157,7 @@ export const AuditComplianceView: React.FC<AuditComplianceViewProps> = ({
             >
               <option value="ALL">All Security &amp; File Events ({auditLogs.length})</option>
               <option value="MEMBER_CHECKIN">MEMBER_CHECKIN</option>
+              <option value="ATTENDANCE_DELETED">ATTENDANCE_DELETED</option>
               <option value="PASSCODE_REQUESTED">PASSCODE_REQUESTED</option>
               <option value="PASSCODE_REJECTED">PASSCODE_REJECTED</option>
               <option value="DOCUMENT_ENCRYPTED">DOCUMENT_ENCRYPTED</option>
@@ -165,6 +166,7 @@ export const AuditComplianceView: React.FC<AuditComplianceViewProps> = ({
               <option value="CLOUD_SYNC_EXECUTED">CLOUD_SYNC_EXECUTED</option>
               <option value="REPORT_EXPORTED">REPORT_EXPORTED</option>
               <option value="RBAC_UPDATED">RBAC_UPDATED</option>
+              <option value="RBAC_DELETED">RBAC_DELETED</option>
               <option value="API_KEY_CREATED">API_KEY_CREATED</option>
             </select>
           </div>

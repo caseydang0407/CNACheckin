@@ -313,7 +313,7 @@ service cloud.firestore {
         && incoming().ownerUid == existing().ownerUid
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'assignedBranches', 'active', 'canReceivePasscode', 'lastActiveAt', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'email', 'facility', 'role', 'assignedBranches', 'active', 'canReceivePasscode', 'lastActiveAt', 'updatedAt']);
       allow delete: if isValidId(staffId) && isBootstrappedAdmin();
     }
 
