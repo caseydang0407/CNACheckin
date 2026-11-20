@@ -1,0 +1,254 @@
+{
+  "entities": {
+    "StaffMember": {
+      "title": "StaffMember",
+      "description": "Authorized CNA union staff, chapter lead, or representative with RBAC role and regional branch scope.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "email": { "type": "string", "format": "email", "minLength": 5, "maxLength": 160 },
+        "role": {
+          "type": "string",
+          "enum": ["Administrative Staff", "Union Representative", "Unit Representative", "PPC Member"]
+        },
+        "assignedBranches": { "type": "array" },
+        "facility": { "type": "string", "minLength": 2, "maxLength": 140 },
+        "active": { "type": "boolean" },
+        "lastActiveAt": { "type": "string", "maxLength": 64 },
+        "canReceivePasscode": { "type": "boolean" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "object" },
+        "updatedAt": { "type": "object" }
+      },
+      "required": ["id", "name", "email", "role", "assignedBranches", "facility", "active", "lastActiveAt", "canReceivePasscode", "ownerUid", "createdAt", "updatedAt"]
+    },
+    "DailyPasscode": {
+      "title": "DailyPasscode",
+      "description": "Server-protected daily 6-digit protection passcode verifying in-person attendance.",
+      "type": "object",
+      "properties": {
+        "dateKey": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "maxLength": 10 },
+        "code": { "type": "string", "pattern": "^\\d{6}$", "maxLength": 6 },
+        "authorizedEmails": { "type": "array" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "object" },
+        "updatedAt": { "type": "object" }
+      },
+      "required": ["dateKey", "code", "authorizedEmails", "ownerUid", "createdAt", "updatedAt"]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Verified in-person union meeting check-in record (check-in only, no check-out).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "phone": { "type": "string", "minLength": 7, "maxLength": 32 },
+        "email": { "type": "string", "format": "email", "minLength": 5, "maxLength": 160 },
+        "branch": {
+          "type": "string",
+          "enum": ["San Francisco", "Sacramento", "Los Angeles", "Irvine", "San Diego"]
+        },
+        "unit": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "meetingTitle": {
+          "type": "string",
+          "enum": ["Union Rep Meeting", "PPC Members Meeting"]
+        },
+        "memberRole": {
+          "type": "string",
+          "enum": ["Union Member (RN)", "Union Representative", "Unit Representative", "PPC Member", "Administrative Staff"]
+        },
+        "checkedInAt": { "type": "string", "maxLength": 64 },
+        "dateKey": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "maxLength": 10 },
+        "verificationHash": { "type": "string", "minLength": 8, "maxLength": 128 },
+        "rememberedDevice": { "type": "boolean" },
+        "verificationPasscode": { "type": "string", "pattern": "^\\d{6}$", "maxLength": 6 },
+        "authorizedEmails": { "type": "array" },
+        "createdAt": { "type": "object" }
+      },
+      "required": ["id", "name", "phone", "email", "branch", "unit", "meetingTitle", "memberRole", "checkedInAt", "dateKey", "verificationHash", "rememberedDevice", "verificationPasscode", "authorizedEmails", "createdAt"]
+    },
+    "PasscodeDispatch": {
+      "title": "PasscodeDispatch",
+      "description": "Log of daily passcode verification requests and email dispatches.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "requestedByEmail": { "type": "string", "maxLength": 160 },
+        "recipientName": { "type": "string", "maxLength": 120 },
+        "recipientRole": { "type": "string", "maxLength": 64 },
+        "branch": { "type": "string", "maxLength": 40 },
+        "passcode": { "type": "string", "maxLength": 6 },
+        "dateKey": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "maxLength": 10 },
+        "dispatchedAt": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["Dispatched", "Rejected"] },
+        "reason": { "type": "string", "maxLength": 300 },
+        "authorizedEmails": { "type": "array" },
+        "createdAt": { "type": "object" }
+      },
+      "required": ["id", "requestedByEmail", "recipientName", "recipientRole", "branch", "passcode", "dateKey", "dispatchedAt", "status", "authorizedEmails", "createdAt"]
+    },
+    "AuditLogEntry": {
+      "title": "AuditLogEntry",
+      "description": "Immutable security and file activity audit trail entry.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "timestamp": { "type": "string", "maxLength": 64 },
+        "actorName": { "type": "string", "maxLength": 120 },
+        "actorEmail": { "type": "string", "maxLength": 160 },
+        "actorRole": { "type": "string", "maxLength": 64 },
+        "branch": { "type": "string", "maxLength": 40 },
+        "action": { "type": "string", "maxLength": 48 },
+        "resource": { "type": "string", "maxLength": 180 },
+        "details": { "type": "string", "maxLength": 500 },
+        "integrityHash": { "type": "string", "maxLength": 128 },
+        "authorizedEmails": { "type": "array" },
+        "createdAt": { "type": "object" }
+      },
+      "required": ["id", "timestamp", "actorName", "actorEmail", "actorRole", "branch", "action", "resource", "details", "integrityHash", "authorizedEmails", "createdAt"]
+    },
+    "EncryptedDocument": {
+      "title": "EncryptedDocument",
+      "description": "Client-side AES-256-GCM encrypted union document payload.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 2, "maxLength": 180 },
+        "category": { "type": "string", "enum": ["Bargaining Minutes", "PPC Staffing Log", "Signed Roster", "Grievance Brief"] },
+        "branch": { "type": "string", "enum": ["San Francisco", "Sacramento", "Los Angeles", "Irvine", "San Diego"] },
+        "uploadedBy": { "type": "string", "maxLength": 120 },
+        "uploadedAt": { "type": "string", "maxLength": 64 },
+        "sizeBytes": { "type": "number" },
+        "algorithm": { "type": "string", "enum": ["AES-256-GCM"] },
+        "kdf": { "type": "string", "enum": ["PBKDF2-SHA256"] },
+        "saltB64": { "type": "string", "maxLength": 256 },
+        "ivB64": { "type": "string", "maxLength": 256 },
+        "ciphertextB64": { "type": "string", "maxLength": 200000 },
+        "checksumSha256": { "type": "string", "maxLength": 128 },
+        "authorizedEmails": { "type": "array" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "object" }
+      },
+      "required": ["id", "title", "category", "branch", "uploadedBy", "uploadedAt", "sizeBytes", "algorithm", "kdf", "saltB64", "ivB64", "ciphertextB64", "checksumSha256", "authorizedEmails", "ownerUid", "createdAt"]
+    },
+    "CloudConnector": {
+      "title": "CloudConnector",
+      "description": "Cloud backup destination connector configuration.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "provider": { "type": "string", "maxLength": 64 },
+        "accountLabel": { "type": "string", "maxLength": 160 },
+        "targetPath": { "type": "string", "maxLength": 200 },
+        "connected": { "type": "boolean" },
+        "autoSync": { "type": "boolean" },
+        "lastSyncedAt": { "type": "string", "maxLength": 64 },
+        "encryptedAtRest": { "type": "boolean" },
+        "filesSynced": { "type": "number" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "updatedAt": { "type": "object" }
+      },
+      "required": ["id", "provider", "accountLabel", "targetPath", "connected", "autoSync", "encryptedAtRest", "filesSynced", "ownerUid", "updatedAt"]
+    },
+    "CloudBackupSnapshot": {
+      "title": "CloudBackupSnapshot",
+      "description": "Recorded cloud backup snapshot metadata.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "provider": { "type": "string", "maxLength": 64 },
+        "triggeredBy": { "type": "string", "maxLength": 120 },
+        "branchScope": { "type": "string", "maxLength": 40 },
+        "recordCount": { "type": "number" },
+        "encryptedDocCount": { "type": "number" },
+        "sizeKb": { "type": "number" },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "checksum": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["Completed", "Verified"] },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "serverCreatedAt": { "type": "object" }
+      },
+      "required": ["id", "provider", "triggeredBy", "branchScope", "recordCount", "encryptedDocCount", "sizeKb", "createdAt", "checksum", "status", "ownerUid", "serverCreatedAt"]
+    },
+    "ApiKeyRecord": {
+      "title": "ApiKeyRecord",
+      "description": "Branch-scoped developer API key metadata.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "label": { "type": "string", "maxLength": 120 },
+        "prefix": { "type": "string", "maxLength": 32 },
+        "tokenPreview": { "type": "string", "maxLength": 64 },
+        "scopes": { "type": "array" },
+        "branchScope": { "type": "string", "maxLength": 40 },
+        "createdBy": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "lastUsedAt": { "type": "string", "maxLength": 64 },
+        "active": { "type": "boolean" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "serverCreatedAt": { "type": "object" }
+      },
+      "required": ["id", "label", "prefix", "tokenPreview", "scopes", "branchScope", "createdBy", "createdAt", "active", "ownerUid", "serverCreatedAt"]
+    },
+    "WebhookConfig": {
+      "title": "WebhookConfig",
+      "description": "Outbound developer webhook endpoint config.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "maxLength": 120 },
+        "url": { "type": "string", "maxLength": 300 },
+        "events": { "type": "array" },
+        "active": { "type": "boolean" },
+        "lastTriggeredAt": { "type": "string", "maxLength": 64 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "serverCreatedAt": { "type": "object" }
+      },
+      "required": ["id", "name", "url", "events", "active", "ownerUid", "serverCreatedAt"]
+    }
+  },
+  "firestore": {
+    "/staff/{staffId}": {
+      "schema": { "$ref": "#/entities/StaffMember" },
+      "description": "Authorized CNA staff directory and branch RBAC assignments."
+    },
+    "/daily_passcodes/{dateKey}": {
+      "schema": { "$ref": "#/entities/DailyPasscode" },
+      "description": "Daily meeting passcode verified server-side in security rules."
+    },
+    "/attendance/{recordId}": {
+      "schema": { "$ref": "#/entities/AttendanceRecord" },
+      "description": "In-person union meeting check-in records segregated by regional chapter."
+    },
+    "/passcode_dispatches/{dispatchId}": {
+      "schema": { "$ref": "#/entities/PasscodeDispatch" },
+      "description": "Audit log of organizer passcode requests and email dispatches."
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLogEntry" },
+      "description": "Compliance and file activity audit trail."
+    },
+    "/encrypted_documents/{docId}": {
+      "schema": { "$ref": "#/entities/EncryptedDocument" },
+      "description": "E2EE AES-256-GCM union document vault."
+    },
+    "/cloud_connectors/{connectorId}": {
+      "schema": { "$ref": "#/entities/CloudConnector" },
+      "description": "Cloud storage connectors for Google Drive and third-party backups."
+    },
+    "/backup_snapshots/{snapshotId}": {
+      "schema": { "$ref": "#/entities/CloudBackupSnapshot" },
+      "description": "Backup snapshot history."
+    },
+    "/api_keys/{keyId}": {
+      "schema": { "$ref": "#/entities/ApiKeyRecord" },
+      "description": "Enterprise API token registry."
+    },
+    "/webhooks/{webhookId}": {
+      "schema": { "$ref": "#/entities/WebhookConfig" },
+      "description": "Enterprise webhook configuration."
+    }
+  }
+}

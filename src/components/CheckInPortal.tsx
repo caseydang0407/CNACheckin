@@ -31,11 +31,21 @@ import {
   saveMemberProfileCookie,
 } from '../utils/cookies';
 import { formatPhoneDisplay, validatePasscodeFormat } from '../utils/rbac';
+import { type User as FirebaseUser } from '../firebase';
+import {
+  submitCheckInFirebase,
+  submitPasscodeRequestFirebase,
+} from '../services/unionBackend';
+import { StaffMember } from '../types/union';
+import assemblyHallImg from '../assets/images/cna_assembly_hall_1795193812567.jpg';
 
 interface CheckInPortalProps {
   today: string;
   compliance: ComplianceSummary[];
   dispatches: PasscodeDispatch[];
+  staff: StaffMember[];
+  backendMode: 'firebase' | 'express' | 'static';
+  firebaseUser: FirebaseUser | null;
   onCheckInSuccess: (record: AttendanceRecord) => void;
   onPasscodeDispatched: (dispatch: PasscodeDispatch) => void;
 }
@@ -44,6 +54,9 @@ export const CheckInPortal: React.FC<CheckInPortalProps> = ({
   today,
   compliance,
   dispatches,
+  staff,
+  backendMode,
+  firebaseUser,
   onCheckInSuccess,
   onPasscodeDispatched,
 }) => {
@@ -113,26 +126,50 @@ export const CheckInPortal: React.FC<CheckInPortalProps> = ({
 
     setRequestingPasscode(true);
     try {
-      const res = await fetch('/api/v1/passcode/request', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: adminEmail.trim(), branch: requestBranch }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setPasscodeNotice({
-          type: 'error',
-          text: data.error || 'Email is not authorized to receive today’s passcode.',
-          dispatch: data.dispatch,
+      if (backendMode === 'express') {
+        const res = await fetch('/api/v1/passcode/request', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: adminEmail.trim(), branch: requestBranch }),
         });
-        if (data.dispatch) onPasscodeDispatched(data.dispatch);
+        const data = await res.json();
+        if (!res.ok) {
+          setPasscodeNotice({
+            type: 'error',
+            text: data.error || 'Email is not authorized to receive today’s passcode.',
+            dispatch: data.dispatch,
+          });
+          if (data.dispatch) onPasscodeDispatched(data.dispatch);
+        } else {
+          setPasscodeNotice({
+            type: 'success',
+            text: `Daily passcode dispatched to ${data.dispatch.requestedByEmail}.`,
+            dispatch: data.dispatch,
+          });
+          onPasscodeDispatched(data.dispatch);
+        }
       } else {
-        setPasscodeNotice({
-          type: 'success',
-          text: `Daily passcode dispatched to ${data.dispatch.requestedByEmail}.`,
-          dispatch: data.dispatch,
+        const result = await submitPasscodeRequestFirebase({
+          email: adminEmail.trim(),
+          branch: requestBranch,
+          staff,
+          firebaseUser,
         });
-        onPasscodeDispatched(data.dispatch);
+        if (!result.ok) {
+          setPasscodeNotice({
+            type: 'error',
+            text: result.error || 'Email is not authorized to receive today’s passcode.',
+            dispatch: result.dispatch,
+          });
+          onPasscodeDispatched(result.dispatch);
+        } else {
+          setPasscodeNotice({
+            type: 'success',
+            text: `Daily passcode dispatched to ${result.dispatch.requestedByEmail}.`,
+            dispatch: result.dispatch,
+          });
+          onPasscodeDispatched(result.dispatch);
+        }
       }
     } catch {
       setPasscodeNotice({
@@ -159,10 +196,31 @@ export const CheckInPortal: React.FC<CheckInPortalProps> = ({
 
     setSubmitting(true);
     try {
-      const res = await fetch('/api/v1/attendance/checkin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      let createdRecord: AttendanceRecord | null = null;
+      if (backendMode === 'express') {
+        const res = await fetch('/api/v1/attendance/checkin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            passcode: passcode.trim(),
+            name: name.trim(),
+            phone: phone.trim(),
+            email: email.trim(),
+            branch,
+            unit: unit.trim(),
+            meetingTitle,
+            memberRole,
+            rememberedDevice: rememberDevice,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setErrorMsg(data.error || 'Check-in rejected. Verify today’s passcode.');
+          return;
+        }
+        createdRecord = data.record;
+      } else {
+        const result = await submitCheckInFirebase({
           passcode: passcode.trim(),
           name: name.trim(),
           phone: phone.trim(),
@@ -172,12 +230,14 @@ export const CheckInPortal: React.FC<CheckInPortalProps> = ({
           meetingTitle,
           memberRole,
           rememberedDevice: rememberDevice,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setErrorMsg(data.error || 'Check-in rejected. Verify today’s passcode.');
-        return;
+          staff,
+          firebaseUser,
+        });
+        if (!result.ok) {
+          setErrorMsg(result.error);
+          return;
+        }
+        createdRecord = result.record;
       }
 
       if (rememberDevice) {
@@ -198,8 +258,10 @@ export const CheckInPortal: React.FC<CheckInPortalProps> = ({
         setCookieLoaded(null);
       }
 
-      setReceipt(data.record);
-      onCheckInSuccess(data.record);
+      if (createdRecord) {
+        setReceipt(createdRecord);
+        onCheckInSuccess(createdRecord);
+      }
     } catch {
       setErrorMsg('Network error submitting check-in. Please retry.');
     } finally {
@@ -626,7 +688,7 @@ export const CheckInPortal: React.FC<CheckInPortalProps> = ({
         <div className="relative rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-900 min-h-[240px]">
           {!imageFailed ? (
             <img
-              src="/src/assets/images/cna_assembly_hall_1795193812567.jpg"
+              src={assemblyHallImg}
               alt="California Nurses Association sunlit regional chapter assembly hall"
               referrerPolicy="no-referrer"
               onError={() => setImageFailed(true)}

@@ -1,0 +1,462 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Identity & Primitive Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 2 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isDateKey(dk) {
+      return dk is string && dk.size() == 10 && dk.matches('^\\d{4}-\\d{2}-\\d{2}$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn()
+        && request.auth.token.email_verified == true
+        && request.auth.token.email is string;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'caseydang0407@gmail.com';
+    }
+
+    function isValidBranch(b) {
+      return b in ['San Francisco', 'Sacramento', 'Los Angeles', 'Irvine', 'San Diego'];
+    }
+
+    function isValidStaffRole(r) {
+      return r in ['Administrative Staff', 'Union Representative', 'Unit Representative', 'PPC Member'];
+    }
+
+    function isValidCheckInRole(r) {
+      return r in ['Union Member (RN)', 'Union Representative', 'Unit Representative', 'PPC Member', 'Administrative Staff'];
+    }
+
+    function isValidMeeting(m) {
+      return m in ['Union Rep Meeting', 'PPC Members Meeting'];
+    }
+
+    function isValidEmailList(arr) {
+      return arr is list && arr.size() >= 1 && arr.size() <= 25 && arr[0] is string;
+    }
+
+    function isValidBranchList(arr) {
+      return arr is list && arr.size() >= 1 && arr.size() <= 5 && arr[0] is string;
+    }
+
+    function isValidScopeList(arr) {
+      return arr is list && arr.size() >= 1 && arr.size() <= 10 && arr[0] is string;
+    }
+
+    // Validation Blueprints
+    function isValidStaff(data) {
+      return data.keys().hasAll([
+          'id', 'name', 'email', 'role', 'assignedBranches',
+          'facility', 'active', 'lastActiveAt', 'canReceivePasscode',
+          'ownerUid', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'name', 'email', 'role', 'assignedBranches',
+          'facility', 'active', 'lastActiveAt', 'canReceivePasscode',
+          'ownerUid', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 120
+        && data.email is string && data.email.size() >= 5 && data.email.size() <= 160
+        && isValidStaffRole(data.role)
+        && isValidBranchList(data.assignedBranches)
+        && data.facility is string && data.facility.size() >= 2 && data.facility.size() <= 140
+        && data.active is bool
+        && data.lastActiveAt is string && data.lastActiveAt.size() <= 64
+        && data.canReceivePasscode is bool
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidDailyPasscode(data) {
+      return data.keys().hasAll(['dateKey', 'code', 'authorizedEmails', 'ownerUid', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['dateKey', 'code', 'authorizedEmails', 'ownerUid', 'createdAt', 'updatedAt'])
+        && isDateKey(data.dateKey)
+        && data.code is string && data.code.size() == 6 && data.code.matches('^\\d{6}$')
+        && isValidEmailList(data.authorizedEmails)
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAttendance(data) {
+      return data.keys().hasAll([
+          'id', 'name', 'phone', 'email', 'branch', 'unit',
+          'meetingTitle', 'memberRole', 'checkedInAt', 'dateKey',
+          'verificationHash', 'rememberedDevice', 'verificationPasscode',
+          'authorizedEmails', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'name', 'phone', 'email', 'branch', 'unit',
+          'meetingTitle', 'memberRole', 'checkedInAt', 'dateKey',
+          'verificationHash', 'rememberedDevice', 'verificationPasscode',
+          'authorizedEmails', 'createdAt'
+        ])
+        && isValidId(data.id)
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 120
+        && data.phone is string && data.phone.size() >= 7 && data.phone.size() <= 32
+        && data.email is string && data.email.size() >= 5 && data.email.size() <= 160
+        && isValidBranch(data.branch)
+        && data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 120
+        && isValidMeeting(data.meetingTitle)
+        && isValidCheckInRole(data.memberRole)
+        && data.checkedInAt is string && data.checkedInAt.size() <= 64
+        && isDateKey(data.dateKey)
+        && data.verificationHash is string && data.verificationHash.size() >= 8 && data.verificationHash.size() <= 128
+        && data.rememberedDevice is bool
+        && data.verificationPasscode is string && data.verificationPasscode.size() == 6 && data.verificationPasscode.matches('^\\d{6}$')
+        && isValidEmailList(data.authorizedEmails)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidPasscodeDispatch(data) {
+      return data.keys().hasAll([
+          'id', 'requestedByEmail', 'recipientName', 'recipientRole',
+          'branch', 'passcode', 'dateKey', 'dispatchedAt', 'status',
+          'authorizedEmails', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'requestedByEmail', 'recipientName', 'recipientRole',
+          'branch', 'passcode', 'dateKey', 'dispatchedAt', 'status',
+          'reason', 'authorizedEmails', 'createdAt'
+        ])
+        && isValidId(data.id)
+        && data.requestedByEmail is string && data.requestedByEmail.size() <= 160
+        && data.recipientName is string && data.recipientName.size() <= 120
+        && data.recipientRole is string && data.recipientRole.size() <= 64
+        && data.branch is string && data.branch.size() <= 40
+        && data.passcode is string && data.passcode.size() <= 6
+        && isDateKey(data.dateKey)
+        && data.dispatchedAt is string && data.dispatchedAt.size() <= 64
+        && data.status in ['Dispatched', 'Rejected']
+        && (!('reason' in data) || (data.reason is string && data.reason.size() <= 300))
+        && isValidEmailList(data.authorizedEmails)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll([
+          'id', 'timestamp', 'actorName', 'actorEmail', 'actorRole',
+          'branch', 'action', 'resource', 'details', 'integrityHash',
+          'authorizedEmails', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'timestamp', 'actorName', 'actorEmail', 'actorRole',
+          'branch', 'action', 'resource', 'details', 'integrityHash',
+          'authorizedEmails', 'createdAt'
+        ])
+        && isValidId(data.id)
+        && data.timestamp is string && data.timestamp.size() <= 64
+        && data.actorName is string && data.actorName.size() <= 120
+        && data.actorEmail is string && data.actorEmail.size() <= 160
+        && data.actorRole is string && data.actorRole.size() <= 64
+        && data.branch is string && data.branch.size() <= 40
+        && data.action is string && data.action.size() <= 48
+        && data.resource is string && data.resource.size() <= 180
+        && data.details is string && data.details.size() <= 500
+        && data.integrityHash is string && data.integrityHash.size() <= 128
+        && isValidEmailList(data.authorizedEmails)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidEncryptedDocument(data) {
+      return data.keys().hasAll([
+          'id', 'title', 'category', 'branch', 'uploadedBy', 'uploadedAt',
+          'sizeBytes', 'algorithm', 'kdf', 'saltB64', 'ivB64',
+          'ciphertextB64', 'checksumSha256', 'authorizedEmails', 'ownerUid', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'title', 'category', 'branch', 'uploadedBy', 'uploadedAt',
+          'sizeBytes', 'algorithm', 'kdf', 'saltB64', 'ivB64',
+          'ciphertextB64', 'checksumSha256', 'authorizedEmails', 'ownerUid', 'createdAt'
+        ])
+        && isValidId(data.id)
+        && data.title is string && data.title.size() >= 2 && data.title.size() <= 180
+        && data.category in ['Bargaining Minutes', 'PPC Staffing Log', 'Signed Roster', 'Grievance Brief']
+        && isValidBranch(data.branch)
+        && data.uploadedBy is string && data.uploadedBy.size() <= 120
+        && data.uploadedAt is string && data.uploadedAt.size() <= 64
+        && data.sizeBytes is number && data.sizeBytes >= 0 && data.sizeBytes <= 500000
+        && data.algorithm == 'AES-256-GCM'
+        && data.kdf == 'PBKDF2-SHA256'
+        && data.saltB64 is string && data.saltB64.size() <= 256
+        && data.ivB64 is string && data.ivB64.size() <= 256
+        && data.ciphertextB64 is string && data.ciphertextB64.size() <= 200000
+        && data.checksumSha256 is string && data.checksumSha256.size() <= 128
+        && isValidEmailList(data.authorizedEmails)
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.createdAt is timestamp;
+    }
+
+    function isValidCloudConnector(data) {
+      return data.keys().hasAll([
+          'id', 'provider', 'accountLabel', 'targetPath', 'connected',
+          'autoSync', 'encryptedAtRest', 'filesSynced', 'ownerUid', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'provider', 'accountLabel', 'targetPath', 'connected',
+          'autoSync', 'lastSyncedAt', 'encryptedAtRest', 'filesSynced', 'ownerUid', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.provider is string && data.provider.size() <= 64
+        && data.accountLabel is string && data.accountLabel.size() <= 160
+        && data.targetPath is string && data.targetPath.size() <= 200
+        && data.connected is bool
+        && data.autoSync is bool
+        && (!('lastSyncedAt' in data) || data.lastSyncedAt == null || (data.lastSyncedAt is string && data.lastSyncedAt.size() <= 64))
+        && data.encryptedAtRest is bool
+        && data.filesSynced is number && data.filesSynced >= 0
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBackupSnapshot(data) {
+      return data.keys().hasAll([
+          'id', 'provider', 'triggeredBy', 'branchScope', 'recordCount',
+          'encryptedDocCount', 'sizeKb', 'createdAt', 'checksum', 'status',
+          'ownerUid', 'serverCreatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'provider', 'triggeredBy', 'branchScope', 'recordCount',
+          'encryptedDocCount', 'sizeKb', 'createdAt', 'checksum', 'status',
+          'ownerUid', 'serverCreatedAt'
+        ])
+        && isValidId(data.id)
+        && data.provider is string && data.provider.size() <= 64
+        && data.triggeredBy is string && data.triggeredBy.size() <= 120
+        && data.branchScope is string && data.branchScope.size() <= 40
+        && data.recordCount is number && data.recordCount >= 0
+        && data.encryptedDocCount is number && data.encryptedDocCount >= 0
+        && data.sizeKb is number && data.sizeKb >= 0
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.checksum is string && data.checksum.size() <= 128
+        && data.status in ['Completed', 'Verified']
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.serverCreatedAt is timestamp;
+    }
+
+    function isValidApiKey(data) {
+      return data.keys().hasAll([
+          'id', 'label', 'prefix', 'tokenPreview', 'scopes', 'branchScope',
+          'createdBy', 'createdAt', 'active', 'ownerUid', 'serverCreatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'label', 'prefix', 'tokenPreview', 'scopes', 'branchScope',
+          'createdBy', 'createdAt', 'lastUsedAt', 'active', 'ownerUid', 'serverCreatedAt'
+        ])
+        && isValidId(data.id)
+        && data.label is string && data.label.size() >= 2 && data.label.size() <= 120
+        && data.prefix is string && data.prefix.size() <= 32
+        && data.tokenPreview is string && data.tokenPreview.size() <= 64
+        && isValidScopeList(data.scopes)
+        && data.branchScope is string && data.branchScope.size() <= 40
+        && data.createdBy is string && data.createdBy.size() <= 120
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && (!('lastUsedAt' in data) || data.lastUsedAt == null || (data.lastUsedAt is string && data.lastUsedAt.size() <= 64))
+        && data.active is bool
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.serverCreatedAt is timestamp;
+    }
+
+    function isValidWebhook(data) {
+      return data.keys().hasAll([
+          'id', 'name', 'url', 'events', 'active', 'ownerUid', 'serverCreatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'name', 'url', 'events', 'active', 'lastTriggeredAt', 'ownerUid', 'serverCreatedAt'
+        ])
+        && isValidId(data.id)
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 120
+        && data.url is string && data.url.size() >= 8 && data.url.size() <= 300
+        && isValidScopeList(data.events)
+        && data.active is bool
+        && (!('lastTriggeredAt' in data) || data.lastTriggeredAt == null || (data.lastTriggeredAt is string && data.lastTriggeredAt.size() <= 64))
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.serverCreatedAt is timestamp;
+    }
+
+    // Collection Rules
+    match /staff/{staffId} {
+      allow get: if isValidId(staffId) && (
+        isBootstrappedAdmin() || (isVerifiedUser() && existing().email == request.auth.token.email)
+      );
+      allow list: if isBootstrappedAdmin() || (isVerifiedUser() && resource.data.email == request.auth.token.email);
+      allow create: if isValidId(staffId) && isBootstrappedAdmin() && isValidStaff(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(staffId) && isBootstrappedAdmin() && isValidStaff(incoming())
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'assignedBranches', 'active', 'canReceivePasscode', 'lastActiveAt', 'updatedAt']);
+      allow delete: if isValidId(staffId) && isBootstrappedAdmin();
+    }
+
+    match /daily_passcodes/{dateKey} {
+      allow get: if isDateKey(dateKey) && (
+        isBootstrappedAdmin() || (isVerifiedUser() && request.auth.token.email in existing().authorizedEmails)
+      );
+      allow list: if isBootstrappedAdmin() || (
+        isVerifiedUser() && resource.data.authorizedEmails.size() > 0 && request.auth.token.email in resource.data.authorizedEmails
+      );
+      allow create: if isDateKey(dateKey) && isBootstrappedAdmin() && isValidDailyPasscode(incoming())
+        && incoming().dateKey == dateKey
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isDateKey(dateKey) && isBootstrappedAdmin() && isValidDailyPasscode(incoming())
+        && incoming().dateKey == existing().dateKey
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['code', 'authorizedEmails', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /attendance/{recordId} {
+      allow get: if isValidId(recordId) && (
+        isBootstrappedAdmin() || (isVerifiedUser() && request.auth.token.email in existing().authorizedEmails)
+      );
+      allow list: if isBootstrappedAdmin() || (
+        isVerifiedUser() && resource.data.authorizedEmails.size() > 0 && request.auth.token.email in resource.data.authorizedEmails
+      );
+      allow create: if isValidId(recordId)
+        && isValidAttendance(incoming())
+        && incoming().createdAt == request.time
+        && (
+          isBootstrappedAdmin() || (
+            exists(/databases/$(database)/documents/daily_passcodes/$(incoming().dateKey))
+            && incoming().verificationPasscode == get(/databases/$(database)/documents/daily_passcodes/$(incoming().dateKey)).data.code
+          )
+        );
+      allow update: if isValidId(recordId) && isBootstrappedAdmin() && isValidAttendance(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['authorizedEmails']);
+      allow delete: if isValidId(recordId) && isBootstrappedAdmin();
+    }
+
+    match /passcode_dispatches/{dispatchId} {
+      allow get: if isValidId(dispatchId) && (
+        isBootstrappedAdmin() || (isVerifiedUser() && request.auth.token.email in existing().authorizedEmails)
+      );
+      allow list: if isBootstrappedAdmin() || (
+        isVerifiedUser() && resource.data.authorizedEmails.size() > 0 && request.auth.token.email in resource.data.authorizedEmails
+      );
+      allow create: if isValidId(dispatchId)
+        && isValidPasscodeDispatch(incoming())
+        && incoming().createdAt == request.time
+        && (
+          isBootstrappedAdmin() || (isVerifiedUser() && incoming().requestedByEmail == request.auth.token.email)
+        );
+      allow update, delete: if false;
+    }
+
+    match /audit_logs/{logId} {
+      allow get: if isValidId(logId) && (
+        isBootstrappedAdmin() || (isVerifiedUser() && request.auth.token.email in existing().authorizedEmails)
+      );
+      allow list: if isBootstrappedAdmin() || (
+        isVerifiedUser() && resource.data.authorizedEmails.size() > 0 && request.auth.token.email in resource.data.authorizedEmails
+      );
+      allow create: if isValidId(logId)
+        && isValidAuditLog(incoming())
+        && incoming().createdAt == request.time
+        && (
+          isBootstrappedAdmin() || (isVerifiedUser() && incoming().actorEmail == request.auth.token.email)
+        );
+      allow update, delete: if false;
+    }
+
+    match /encrypted_documents/{docId} {
+      allow get: if isValidId(docId) && (
+        isBootstrappedAdmin() || (isVerifiedUser() && request.auth.token.email in existing().authorizedEmails)
+      );
+      allow list: if isBootstrappedAdmin() || (
+        isVerifiedUser() && resource.data.authorizedEmails.size() > 0 && request.auth.token.email in resource.data.authorizedEmails
+      );
+      allow create: if isValidId(docId)
+        && isVerifiedUser()
+        && isValidEncryptedDocument(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && (isBootstrappedAdmin() || request.auth.token.email in incoming().authorizedEmails);
+      allow update: if false;
+      allow delete: if isValidId(docId) && (
+        isBootstrappedAdmin() || (isVerifiedUser() && existing().ownerUid == request.auth.uid)
+      );
+    }
+
+    match /cloud_connectors/{connectorId} {
+      allow get: if isValidId(connectorId) && (
+        isBootstrappedAdmin() || (isVerifiedUser() && existing().ownerUid == request.auth.uid)
+      );
+      allow list: if isBootstrappedAdmin() || (isVerifiedUser() && resource.data.ownerUid == request.auth.uid);
+      allow create: if isValidId(connectorId) && isBootstrappedAdmin() && isValidCloudConnector(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(connectorId) && isBootstrappedAdmin() && isValidCloudConnector(incoming())
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['connected', 'autoSync', 'lastSyncedAt', 'filesSynced', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /backup_snapshots/{snapshotId} {
+      allow get: if isValidId(snapshotId) && (
+        isBootstrappedAdmin() || (isVerifiedUser() && existing().ownerUid == request.auth.uid)
+      );
+      allow list: if isBootstrappedAdmin() || (isVerifiedUser() && resource.data.ownerUid == request.auth.uid);
+      allow create: if isValidId(snapshotId) && isBootstrappedAdmin() && isValidBackupSnapshot(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && incoming().serverCreatedAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /api_keys/{keyId} {
+      allow get: if isValidId(keyId) && isBootstrappedAdmin();
+      allow list: if isBootstrappedAdmin();
+      allow create: if isValidId(keyId) && isBootstrappedAdmin() && isValidApiKey(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && incoming().serverCreatedAt == request.time;
+      allow update: if isValidId(keyId) && isBootstrappedAdmin() && isValidApiKey(incoming())
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().serverCreatedAt == existing().serverCreatedAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['active', 'lastUsedAt']);
+      allow delete: if false;
+    }
+
+    match /webhooks/{webhookId} {
+      allow get: if isValidId(webhookId) && isBootstrappedAdmin();
+      allow list: if isBootstrappedAdmin();
+      allow create: if isValidId(webhookId) && isBootstrappedAdmin() && isValidWebhook(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && incoming().serverCreatedAt == request.time;
+      allow update, delete: if false;
+    }
+  }
+}

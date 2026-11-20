@@ -8,9 +8,20 @@ import {
   WebhookConfig,
 } from '../types/union';
 import { getPermissionsForRole } from '../utils/rbac';
+import { type User } from '../firebase';
+import {
+  createApiKeyFirebase,
+  createWebhookFirebase,
+  revokeApiKeyFirebase,
+} from '../services/unionBackend';
 
 interface ApiIntegrationsViewProps {
   activeUser: StaffMember;
+  staff: StaffMember[];
+  attendanceCount: number;
+  auditCount: number;
+  backendMode: 'firebase' | 'express' | 'static';
+  firebaseUser: User | null;
   apiKeys: ApiKeyRecord[];
   webhooks: WebhookConfig[];
   onKeyCreated: (key: ApiKeyRecord) => void;
@@ -27,6 +38,11 @@ const API_ENDPOINTS = [
 
 export const ApiIntegrationsView: React.FC<ApiIntegrationsViewProps> = ({
   activeUser,
+  staff,
+  attendanceCount,
+  auditCount,
+  backendMode,
+  firebaseUser,
   apiKeys,
   webhooks,
   onKeyCreated,
@@ -50,55 +66,117 @@ export const ApiIntegrationsView: React.FC<ApiIntegrationsViewProps> = ({
   const handleCreateKey = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!keyLabel.trim()) return;
-    const res = await fetch('/api/v1/integrations/keys', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-actor-id': activeUser.id,
-      },
-      body: JSON.stringify({
+    if (backendMode === 'express') {
+      const res = await fetch('/api/v1/integrations/keys', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-actor-id': activeUser.id,
+        },
+        body: JSON.stringify({
+          label: keyLabel.trim(),
+          scopes: ['attendance:read', 'reports:read', 'backups:sync'],
+          branchScope,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.record) {
+        onKeyCreated(data.record);
+        setNewRawSecret(data.rawSecret);
+        setKeyLabel('');
+      }
+    } else if (backendMode === 'firebase' && firebaseUser) {
+      const { record, rawSecret } = await createApiKeyFirebase({
+        user: firebaseUser,
+        actor: activeUser,
+        staff,
         label: keyLabel.trim(),
         scopes: ['attendance:read', 'reports:read', 'backups:sync'],
         branchScope,
-      }),
-    });
-    const data = await res.json();
-    if (res.ok && data.record) {
-      onKeyCreated(data.record);
-      setNewRawSecret(data.rawSecret);
+      });
+      onKeyCreated(record);
+      setNewRawSecret(rawSecret);
+      setKeyLabel('');
+    } else {
+      const suffix = Math.random().toString(36).slice(2, 6);
+      const rawSecret = `cna_live_${suffix}_${Math.random().toString(36).slice(2, 14)}`;
+      const record: ApiKeyRecord = {
+        id: `key-${Date.now()}`,
+        label: keyLabel.trim(),
+        prefix: `cna_live_${suffix}`,
+        tokenPreview: `cna_live_${suffix}_••••••••${rawSecret.slice(-4)}`,
+        scopes: ['attendance:read', 'reports:read', 'backups:sync'],
+        branchScope,
+        createdBy: activeUser.email,
+        createdAt: new Date().toISOString(),
+        lastUsedAt: null,
+        active: true,
+      };
+      onKeyCreated(record);
+      setNewRawSecret(rawSecret);
       setKeyLabel('');
     }
   };
 
   const handleRevokeKey = async (id: string) => {
-    const res = await fetch(`/api/v1/integrations/keys/${id}`, {
-      method: 'DELETE',
-      headers: { 'x-actor-id': activeUser.id },
-    });
-    const data = await res.json();
-    if (res.ok && data.key) {
-      onKeyRevoked(data.key);
+    if (backendMode === 'express') {
+      const res = await fetch(`/api/v1/integrations/keys/${id}`, {
+        method: 'DELETE',
+        headers: { 'x-actor-id': activeUser.id },
+      });
+      const data = await res.json();
+      if (res.ok && data.key) {
+        onKeyRevoked(data.key);
+      }
+    } else {
+      if (backendMode === 'firebase' && firebaseUser) {
+        await revokeApiKeyFirebase({ keyId: id, actor: activeUser, staff });
+      }
+      const existing = apiKeys.find((k) => k.id === id);
+      if (existing) onKeyRevoked({ ...existing, active: false });
     }
   };
 
   const handleAddWebhook = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!whName.trim() || !whUrl.trim()) return;
-    const res = await fetch('/api/v1/integrations/webhooks', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-actor-id': activeUser.id,
-      },
-      body: JSON.stringify({
-        name: whName.trim(),
-        url: whUrl.trim(),
-        events: ['attendance.checkin', 'backup.completed'],
-      }),
-    });
-    const data = await res.json();
-    if (res.ok && data.webhook) {
-      onWebhookCreated(data.webhook);
+    if (backendMode === 'express') {
+      const res = await fetch('/api/v1/integrations/webhooks', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-actor-id': activeUser.id,
+        },
+        body: JSON.stringify({
+          name: whName.trim(),
+          url: whUrl.trim(),
+          events: ['attendance.checkin', 'backup.completed'],
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.webhook) {
+        onWebhookCreated(data.webhook);
+        setWhName('');
+        setWhUrl('');
+      }
+    } else {
+      const wh: WebhookConfig =
+        backendMode === 'firebase' && firebaseUser
+          ? await createWebhookFirebase({
+              user: firebaseUser,
+              name: whName.trim(),
+              url: whUrl.trim(),
+              events: ['attendance.checkin', 'backup.completed'],
+            })
+          : {
+              id: `wh-${Date.now()}`,
+              name: whName.trim(),
+              url: whUrl.trim(),
+              events: ['attendance.checkin', 'backup.completed'],
+              active: true,
+              lastTriggeredAt: null,
+            };
+      onWebhookCreated(wh);
       setWhName('');
       setWhUrl('');
     }
@@ -107,12 +185,32 @@ export const ApiIntegrationsView: React.FC<ApiIntegrationsViewProps> = ({
   const handleExecuteApiTest = async () => {
     setRunningTest(true);
     try {
-      const res = await fetch(selectedEndpoint, {
-        headers: { 'x-actor-id': activeUser.id },
-      });
-      setApiStatus(res.status);
-      const json = await res.json();
-      setApiResponse(JSON.stringify(json, null, 2));
+      if (backendMode === 'express') {
+        const res = await fetch(selectedEndpoint, {
+          headers: { 'x-actor-id': activeUser.id },
+        });
+        setApiStatus(res.status);
+        const json = await res.json();
+        setApiResponse(JSON.stringify(json, null, 2));
+      } else {
+        setApiStatus(200);
+        setApiResponse(
+          JSON.stringify(
+            {
+              ok: true,
+              mode: backendMode === 'firebase' ? 'firebase-firestore' : 'github-pages-static',
+              endpoint: selectedEndpoint,
+              actor: activeUser.email,
+              counts: {
+                attendanceRecords: attendanceCount,
+                auditEntries: auditCount,
+              },
+            },
+            null,
+            2
+          )
+        );
+      }
     } finally {
       setRunningTest(false);
     }

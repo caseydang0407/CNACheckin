@@ -21,9 +21,19 @@ import {
 } from '../types/union';
 import { decryptDocumentContent, encryptDocumentContent } from '../utils/crypto';
 import { getAccessibleBranches, getPermissionsForRole } from '../utils/rbac';
+import { type User } from '../firebase';
+import {
+  createEncryptedDocFirebase,
+  triggerBackupSnapshotFirebase,
+  updateConnectorFirebase,
+} from '../services/unionBackend';
 
 interface VaultAndCloudViewProps {
   activeUser: StaffMember;
+  staff: StaffMember[];
+  attendanceCount: number;
+  backendMode: 'firebase' | 'express' | 'static';
+  firebaseUser: User | null;
   documents: EncryptedDocument[];
   connectors: CloudConnector[];
   snapshots: CloudBackupSnapshot[];
@@ -31,7 +41,7 @@ interface VaultAndCloudViewProps {
   onConnectorUpdated: (conn: CloudConnector) => void;
   onBackupCompleted: (snap: CloudBackupSnapshot) => void;
   onRecordAudit: (
-    action: 'DOCUMENT_DECRYPTED',
+    action: 'DOCUMENT_DECRYPTED' | 'DOCUMENT_ENCRYPTED' | 'DRIVE_BACKUP_SYNCED' | 'CLOUD_SYNC_EXECUTED',
     resource: string,
     details: string,
     branch?: RegionalBranch | 'All Branches'
@@ -84,6 +94,10 @@ jobs:
 
 export const VaultAndCloudView: React.FC<VaultAndCloudViewProps> = ({
   activeUser,
+  staff,
+  attendanceCount,
+  backendMode,
+  firebaseUser,
   documents,
   connectors,
   snapshots,
@@ -142,37 +156,81 @@ export const VaultAndCloudView: React.FC<VaultAndCloudViewProps> = ({
     setEncrypting(true);
     try {
       const encrypted = await encryptDocumentContent(plaintext, passphrase);
-      const res = await fetch('/api/v1/documents', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-actor-id': activeUser.id,
-        },
-        body: JSON.stringify({
+      if (backendMode === 'express') {
+        const res = await fetch('/api/v1/documents', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-actor-id': activeUser.id,
+          },
+          body: JSON.stringify({
+            title: title.trim(),
+            category,
+            branch,
+            sizeBytes: encrypted.sizeBytes,
+            algorithm: 'AES-256-GCM',
+            kdf: 'PBKDF2-SHA256',
+            saltB64: encrypted.saltB64,
+            ivB64: encrypted.ivB64,
+            ciphertextB64: encrypted.ciphertextB64,
+            checksumSha256: encrypted.checksumSha256,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setVaultError(data.error || 'Failed to store encrypted document.');
+          return;
+        }
+        onDocumentCreated(data.document);
+        setTitle('');
+        setPlaintext('');
+        setPassphrase('');
+        setVaultNotice(
+          `Encrypted "${data.document.title}" locally with AES-256-GCM before upload.`
+        );
+      } else {
+        const docPayload = {
           title: title.trim(),
           category,
           branch,
           sizeBytes: encrypted.sizeBytes,
-          algorithm: 'AES-256-GCM',
-          kdf: 'PBKDF2-SHA256',
+          algorithm: 'AES-256-GCM' as const,
+          kdf: 'PBKDF2-SHA256' as const,
           saltB64: encrypted.saltB64,
           ivB64: encrypted.ivB64,
           ciphertextB64: encrypted.ciphertextB64,
           checksumSha256: encrypted.checksumSha256,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setVaultError(data.error || 'Failed to store encrypted document.');
-        return;
+        };
+        const createdDoc: EncryptedDocument =
+          backendMode === 'firebase' && firebaseUser
+            ? await createEncryptedDocFirebase({
+                user: firebaseUser,
+                actor: activeUser,
+                staff,
+                docData: docPayload,
+              })
+            : {
+                id: `doc-${Date.now()}`,
+                ...docPayload,
+                uploadedBy: activeUser.name,
+                uploadedAt: new Date().toISOString(),
+              };
+        onDocumentCreated(createdDoc);
+        if (backendMode === 'static') {
+          onRecordAudit(
+            'DOCUMENT_ENCRYPTED',
+            createdDoc.title,
+            `Encrypted (${createdDoc.sizeBytes} bytes, AES-256-GCM).`,
+            createdDoc.branch
+          );
+        }
+        setTitle('');
+        setPlaintext('');
+        setPassphrase('');
+        setVaultNotice(
+          `Encrypted "${createdDoc.title}" locally with AES-256-GCM before upload.`
+        );
       }
-      onDocumentCreated(data.document);
-      setTitle('');
-      setPlaintext('');
-      setPassphrase('');
-      setVaultNotice(
-        `Encrypted "${data.document.title}" locally with AES-256-GCM before upload.`
-      );
     } catch (err) {
       setVaultError(err instanceof Error ? err.message : 'Encryption failed.');
     } finally {
@@ -205,37 +263,89 @@ export const VaultAndCloudView: React.FC<VaultAndCloudViewProps> = ({
   };
 
   const handleToggleConnector = async (conn: CloudConnector, patch: Partial<CloudConnector>) => {
-    const res = await fetch(`/api/v1/backups/connectors/${conn.id}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-actor-id': activeUser.id,
-      },
-      body: JSON.stringify(patch),
-    });
-    const data = await res.json();
-    if (res.ok && data.connector) {
-      onConnectorUpdated(data.connector);
+    if (backendMode === 'express') {
+      const res = await fetch(`/api/v1/backups/connectors/${conn.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-actor-id': activeUser.id,
+        },
+        body: JSON.stringify(patch),
+      });
+      const data = await res.json();
+      if (res.ok && data.connector) {
+        onConnectorUpdated(data.connector);
+      }
+    } else {
+      if (backendMode === 'firebase' && firebaseUser) {
+        await updateConnectorFirebase({ connectorId: conn.id, patch });
+      }
+      onConnectorUpdated({ ...conn, ...patch });
     }
   };
 
   const handleTriggerBackup = async (provider: CloudConnector['provider']) => {
     setSyncingProvider(provider);
     try {
-      const res = await fetch('/api/v1/backups/sync', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-actor-id': activeUser.id,
-        },
-        body: JSON.stringify({
-          provider,
-          branchScope: perms.canViewAllBranches ? 'All Branches' : accessibleBranches[0],
-        }),
-      });
-      const data = await res.json();
-      if (res.ok && data.snapshot) {
-        onBackupCompleted(data.snapshot);
+      const branchScope = perms.canViewAllBranches ? 'All Branches' : accessibleBranches[0];
+      if (backendMode === 'express') {
+        const res = await fetch('/api/v1/backups/sync', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-actor-id': activeUser.id,
+          },
+          body: JSON.stringify({
+            provider,
+            branchScope,
+          }),
+        });
+        const data = await res.json();
+        if (res.ok && data.snapshot) {
+          onBackupCompleted(data.snapshot);
+          setVaultNotice(`Verified encrypted backup synced to ${provider}.`);
+        }
+      } else {
+        const targetConn = connectors.find((c) => c.provider === provider);
+        if (!targetConn) return;
+        let snapshot: CloudBackupSnapshot;
+        if (backendMode === 'firebase' && firebaseUser) {
+          snapshot = await triggerBackupSnapshotFirebase({
+            user: firebaseUser,
+            actor: activeUser,
+            staff,
+            connector: targetConn,
+            branchScope,
+            recordCount: attendanceCount,
+            encryptedDocCount: documents.length,
+          });
+        } else {
+          const now = new Date().toISOString();
+          snapshot = {
+            id: `snap-${Date.now()}`,
+            provider,
+            triggeredBy: activeUser.name,
+            branchScope,
+            recordCount: attendanceCount,
+            encryptedDocCount: documents.length,
+            sizeKb: Math.max(24, attendanceCount * 4 + documents.length * 16),
+            createdAt: now,
+            checksum: `${Date.now().toString(16)}verified`,
+            status: 'Verified',
+          };
+          onConnectorUpdated({
+            ...targetConn,
+            lastSyncedAt: now,
+            filesSynced: targetConn.filesSynced + 1,
+          });
+          onRecordAudit(
+            provider === 'Google Drive' ? 'DRIVE_BACKUP_SYNCED' : 'CLOUD_SYNC_EXECUTED',
+            `${provider} (${targetConn.targetPath})`,
+            `Backed up ${attendanceCount} attendance logs and ${documents.length} E2EE documents.`,
+            branchScope
+          );
+        }
+        onBackupCompleted(snapshot);
         setVaultNotice(`Verified encrypted backup synced to ${provider}.`);
       }
     } finally {

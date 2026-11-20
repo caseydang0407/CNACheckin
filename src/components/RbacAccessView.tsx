@@ -8,10 +8,14 @@ import {
   UnionRole,
 } from '../types/union';
 import { getPermissionsForRole } from '../utils/rbac';
+import { type User } from '../firebase';
+import { createStaffFirebase, updateStaffFirebase } from '../services/unionBackend';
 
 interface RbacAccessViewProps {
   activeUser: StaffMember;
   staff: StaffMember[];
+  backendMode: 'firebase' | 'express' | 'static';
+  firebaseUser: User | null;
   onStaffUpdated: (updated: StaffMember) => void;
   onStaffCreated: (created: StaffMember) => void;
 }
@@ -19,6 +23,8 @@ interface RbacAccessViewProps {
 export const RbacAccessView: React.FC<RbacAccessViewProps> = ({
   activeUser,
   staff,
+  backendMode,
+  firebaseUser,
   onStaffUpdated,
   onStaffCreated,
 }) => {
@@ -45,20 +51,29 @@ export const RbacAccessView: React.FC<RbacAccessViewProps> = ({
     setSavingId(member.id);
     setNotice(null);
     try {
-      const res = await fetch(`/api/v1/staff/${member.id}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-actor-id': activeUser.id,
-        },
-        body: JSON.stringify(patch),
-      });
-      const data = await res.json();
-      if (res.ok && data.staff) {
-        onStaffUpdated(data.staff);
-        setNotice(`Updated permissions for ${data.staff.name}. Logged to audit trail.`);
+      if (backendMode === 'express') {
+        const res = await fetch(`/api/v1/staff/${member.id}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-actor-id': activeUser.id,
+          },
+          body: JSON.stringify(patch),
+        });
+        const data = await res.json();
+        if (res.ok && data.staff) {
+          onStaffUpdated(data.staff);
+          setNotice(`Updated permissions for ${data.staff.name}. Logged to audit trail.`);
+        } else {
+          setNotice(data.error || 'Failed to update permissions.');
+        }
       } else {
-        setNotice(data.error || 'Failed to update permissions.');
+        if (backendMode === 'firebase' && firebaseUser) {
+          await updateStaffFirebase({ memberId: member.id, patch });
+        }
+        const updated: StaffMember = { ...member, ...patch, lastActiveAt: new Date().toISOString() };
+        onStaffUpdated(updated);
+        setNotice(`Updated permissions for ${updated.name}. Logged to audit trail.`);
       }
     } finally {
       setSavingId(null);
@@ -68,30 +83,64 @@ export const RbacAccessView: React.FC<RbacAccessViewProps> = ({
   const handleCreateMember = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName.trim() || !newEmail.trim()) return;
-    const res = await fetch('/api/v1/staff', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-actor-id': activeUser.id,
-      },
-      body: JSON.stringify({
-        name: newName.trim(),
-        email: newEmail.trim(),
-        role: newRole,
-        assignedBranches: newBranches,
-        facility: newFacility.trim() || 'CNA Regional Chapter',
-        canReceivePasscode: newPasscodeAccess,
-      }),
-    });
-    const data = await res.json();
-    if (res.ok && data.staff) {
-      onStaffCreated(data.staff);
+    if (backendMode === 'express') {
+      const res = await fetch('/api/v1/staff', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-actor-id': activeUser.id,
+        },
+        body: JSON.stringify({
+          name: newName.trim(),
+          email: newEmail.trim(),
+          role: newRole,
+          assignedBranches: newBranches,
+          facility: newFacility.trim() || 'CNA Regional Chapter',
+          canReceivePasscode: newPasscodeAccess,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.staff) {
+        onStaffCreated(data.staff);
+        setNewName('');
+        setNewEmail('');
+        setNewFacility('');
+        setNotice(`Provisioned ${data.staff.name} (${data.staff.role}).`);
+      } else {
+        setNotice(data.error || 'Unable to provision staff user.');
+      }
+    } else {
+      let created: StaffMember;
+      if (backendMode === 'firebase' && firebaseUser) {
+        created = await createStaffFirebase({
+          user: firebaseUser,
+          member: {
+            name: newName.trim(),
+            email: newEmail.trim(),
+            role: newRole,
+            assignedBranches: newBranches,
+            facility: newFacility.trim() || 'CNA Regional Chapter',
+            canReceivePasscode: newPasscodeAccess,
+          },
+        });
+      } else {
+        created = {
+          id: `staff-${Date.now()}`,
+          name: newName.trim(),
+          email: newEmail.trim(),
+          role: newRole,
+          assignedBranches: newBranches,
+          facility: newFacility.trim() || 'CNA Regional Chapter',
+          active: true,
+          lastActiveAt: new Date().toISOString(),
+          canReceivePasscode: newPasscodeAccess,
+        };
+      }
+      onStaffCreated(created);
       setNewName('');
       setNewEmail('');
       setNewFacility('');
-      setNotice(`Provisioned ${data.staff.name} (${data.staff.role}).`);
-    } else {
-      setNotice(data.error || 'Unable to provision staff user.');
+      setNotice(`Provisioned ${created.name} (${created.role}).`);
     }
   };
 

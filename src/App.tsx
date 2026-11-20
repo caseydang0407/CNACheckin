@@ -5,6 +5,8 @@ import {
   ClipboardCheck,
   Code2,
   FileLock2,
+  LogIn,
+  LogOut,
   Menu,
   Moon,
   ShieldCheck,
@@ -33,10 +35,31 @@ import { VaultAndCloudView } from './components/VaultAndCloudView';
 import { AuditComplianceView } from './components/AuditComplianceView';
 import { ApiIntegrationsView } from './components/ApiIntegrationsView';
 import { OnboardingTour } from './components/OnboardingTour';
+import {
+  auth,
+  onAuthStateChanged,
+  signInWithGoogle,
+  signOutFirebase,
+  type User,
+} from './firebase';
+import {
+  ensureFirestoreSeeded,
+  getTodayDateKeyClient,
+  loadStaticWorkspace,
+  recordAuditFirebase,
+  saveStaticWorkspace,
+  subscribeFirestoreWorkspace,
+} from './services/unionBackend';
+import leadAvatarImg from './assets/images/cna_lead_avatar_1795193812224.jpg';
 
 type NavTab = 'checkin' | 'dashboard' | 'rbac' | 'vault' | 'audit' | 'api';
+type BackendMode = 'firebase' | 'express' | 'static';
 
-const NAV_ITEMS: Array<{ id: NavTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
+const NAV_ITEMS: Array<{
+  id: NavTab;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}> = [
   { id: 'checkin', label: 'Member Check-In', icon: ClipboardCheck },
   { id: 'dashboard', label: 'Attendance Analytics', icon: Activity },
   { id: 'rbac', label: 'Roles & Branches', icon: Users },
@@ -57,7 +80,12 @@ export function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => loadThemePreference());
   const [tourOpen, setTourOpen] = useState(false);
 
-  const [today, setToday] = useState(() => new Date().toISOString().slice(0, 10));
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [backendMode, setBackendMode] = useState<BackendMode>('static');
+
+  const [today, setToday] = useState(() => getTodayDateKeyClient());
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [activeUserId, setActiveUserId] = useState<string>('staff-1');
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
@@ -82,12 +110,30 @@ export function App() {
     saveThemePreference(theme);
   }, [theme]);
 
-  const fetchBootstrap = useCallback(async (actorId: string) => {
+  // Listen to Firebase Auth state
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setFirebaseUser(user);
+      setAuthReady(true);
+    });
+    return () => unsub();
+  }, []);
+
+  const fetchExpressBootstrap = useCallback(async (actorId: string): Promise<boolean> => {
     try {
+      if (
+        import.meta.env.VITE_STATIC_ONLY === 'true' ||
+        (typeof window !== 'undefined' && window.location.hostname.endsWith('github.io'))
+      ) {
+        return false;
+      }
       const res = await fetch('/api/v1/bootstrap', {
         headers: { 'x-actor-id': actorId },
       });
-      if (!res.ok) return;
+      const ct = res.headers.get('content-type') ?? '';
+      if (!res.ok || !ct.includes('application/json')) {
+        return false;
+      }
       const data = await res.json();
       setToday(data.today);
       setStaff(data.staff ?? []);
@@ -99,48 +145,141 @@ export function App() {
       setSnapshots(data.backupSnapshots ?? []);
       setApiKeys(data.apiKeys ?? []);
       setWebhooks(data.webhooks ?? []);
-    } finally {
-      setLoading(false);
+      return true;
+    } catch {
+      return false;
     }
   }, []);
 
+  // Load workspace from Firebase (when signed in), Express (dev/Node host), or static browser store (GitHub Pages)
   useEffect(() => {
-    fetchBootstrap(activeUserId);
-  }, [activeUserId, fetchBootstrap]);
+    if (!authReady) return;
 
-  // Real-time Server-Sent Events subscription
-  useEffect(() => {
-    const source = new EventSource('/api/v1/stream');
-    source.addEventListener('attendance:new', () => {
-      fetchBootstrap(activeUserId);
-    });
-    source.addEventListener('audit:new', () => {
-      fetchBootstrap(activeUserId);
-    });
-    source.addEventListener('passcode:dispatched', () => {
-      fetchBootstrap(activeUserId);
-    });
-    source.addEventListener('document:new', () => {
-      fetchBootstrap(activeUserId);
-    });
-    source.addEventListener('backup:new', () => {
-      fetchBootstrap(activeUserId);
-    });
-    source.addEventListener('staff:updated', () => {
-      fetchBootstrap(activeUserId);
-    });
+    if (firebaseUser && firebaseUser.emailVerified) {
+      let unsubFirestore: (() => void) | undefined;
+      let cancelled = false;
+      setBackendMode('firebase');
+      setToday(getTodayDateKeyClient());
+
+      (async () => {
+        try {
+          await ensureFirestoreSeeded(firebaseUser);
+          if (cancelled) return;
+          unsubFirestore = subscribeFirestoreWorkspace(firebaseUser, (partial) => {
+            if (partial.staff) setStaff(partial.staff);
+            if (partial.attendance) setAttendance(partial.attendance);
+            if (partial.passcodeDispatches) setDispatches(partial.passcodeDispatches);
+            if (partial.auditLogs) setAuditLogs(partial.auditLogs);
+            if (partial.documents) setDocuments(partial.documents);
+            if (partial.cloudConnectors) setConnectors(partial.cloudConnectors);
+            if (partial.backupSnapshots) setSnapshots(partial.backupSnapshots);
+            if (partial.apiKeys) setApiKeys(partial.apiKeys);
+            if (partial.webhooks) setWebhooks(partial.webhooks);
+            setLoading(false);
+          });
+        } catch (err) {
+          setAuthNotice(err instanceof Error ? err.message : 'Unable to sync Firestore.');
+          setLoading(false);
+        }
+      })();
+
+      return () => {
+        cancelled = true;
+        unsubFirestore?.();
+      };
+    }
+
+    let sseSource: EventSource | undefined;
+    let active = true;
+
+    (async () => {
+      const ok = await fetchExpressBootstrap(activeUserId);
+      if (!active) return;
+
+      if (ok) {
+        setBackendMode('express');
+        setLoading(false);
+        sseSource = new EventSource('/api/v1/stream');
+        const refresh = () => {
+          void fetchExpressBootstrap(activeUserId);
+        };
+        sseSource.addEventListener('attendance:new', refresh);
+        sseSource.addEventListener('audit:new', refresh);
+        sseSource.addEventListener('passcode:dispatched', refresh);
+        sseSource.addEventListener('document:new', refresh);
+        sseSource.addEventListener('backup:new', refresh);
+        sseSource.addEventListener('staff:updated', refresh);
+      } else {
+        setBackendMode('static');
+        const local = loadStaticWorkspace();
+        setToday(local.today);
+        setStaff(local.staff);
+        setAttendance(local.attendance);
+        setDispatches(local.passcodeDispatches);
+        setAuditLogs(local.auditLogs);
+        setDocuments(local.documents);
+        setConnectors(local.cloudConnectors);
+        setSnapshots(local.backupSnapshots);
+        setApiKeys(local.apiKeys);
+        setWebhooks(local.webhooks);
+        setLoading(false);
+      }
+    })();
+
     return () => {
-      source.close();
+      active = false;
+      sseSource?.close();
     };
-  }, [activeUserId, fetchBootstrap]);
+  }, [authReady, firebaseUser, activeUserId, fetchExpressBootstrap]);
+
+  // Persist changes to browser static storage when in static GitHub Pages mode
+  useEffect(() => {
+    if (backendMode !== 'static' || loading || staff.length === 0) return;
+    saveStaticWorkspace({
+      today,
+      staff,
+      attendance,
+      passcodeDispatches: dispatches,
+      auditLogs,
+      documents,
+      cloudConnectors: connectors,
+      backupSnapshots: snapshots,
+      apiKeys,
+      webhooks,
+    });
+  }, [
+    backendMode,
+    loading,
+    today,
+    staff,
+    attendance,
+    dispatches,
+    auditLogs,
+    documents,
+    connectors,
+    snapshots,
+    apiKeys,
+    webhooks,
+  ]);
+
+  // Match signed-in Google user to staff profile when available
+  useEffect(() => {
+    if (!firebaseUser?.email || staff.length === 0) return;
+    const matched = staff.find(
+      (s) => s.email.toLowerCase() === firebaseUser.email!.toLowerCase()
+    );
+    if (matched) {
+      setActiveUserId(matched.id);
+    }
+  }, [firebaseUser, staff]);
 
   const activeUser: StaffMember = useMemo(() => {
     return (
       staff.find((s) => s.id === activeUserId) ??
       staff[0] ?? {
         id: 'staff-1',
-        name: 'Elena Vance, RN',
-        email: 'caseydang0407@gmail.com',
+        name: firebaseUser?.displayName || 'Elena Vance, RN',
+        email: firebaseUser?.email || 'caseydang0407@gmail.com',
         role: 'Administrative Staff',
         assignedBranches: ['San Francisco', 'Sacramento', 'Los Angeles', 'Irvine', 'San Diego'],
         facility: 'CNA Statewide Operations',
@@ -149,32 +288,73 @@ export function App() {
         canReceivePasscode: true,
       }
     );
-  }, [staff, activeUserId]);
+  }, [staff, activeUserId, firebaseUser]);
 
   const globalComplianceToday = useMemo(
     () => computeBranchCompliance(attendance, today),
     [attendance, today]
   );
 
+  const handleGoogleSignIn = async () => {
+    setAuthNotice(null);
+    try {
+      await signInWithGoogle();
+    } catch (err) {
+      setAuthNotice(
+        err instanceof Error ? err.message : 'Google Sign-In was cancelled or blocked.'
+      );
+    }
+  };
+
+  const handleGoogleSignOut = async () => {
+    setAuthNotice(null);
+    await signOutFirebase();
+  };
+
   const handleRecordAudit = async (
-    action: 'REPORT_EXPORTED' | 'DOCUMENT_DECRYPTED',
+    action: AuditLogEntry['action'],
     resource: string,
     details: string,
     branch: RegionalBranch | 'All Branches' = 'All Branches'
   ) => {
-    const res = await fetch('/api/v1/audit-logs', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-actor-id': activeUser.id,
-      },
-      body: JSON.stringify({ action, resource, details, branch }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.entry) {
-        setAuditLogs((prev) => [data.entry, ...prev]);
+    if (backendMode === 'express') {
+      const res = await fetch('/api/v1/audit-logs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-actor-id': activeUser.id,
+        },
+        body: JSON.stringify({ action, resource, details, branch }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.entry) {
+          setAuditLogs((prev) => [data.entry, ...prev]);
+        }
       }
+    } else if (backendMode === 'firebase' && firebaseUser) {
+      await recordAuditFirebase({
+        actor: activeUser,
+        action,
+        resource,
+        details,
+        branch,
+        staff,
+      });
+    } else {
+      const entry: AuditLogEntry = {
+        id: `aud-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        actorName: activeUser.name,
+        actorEmail: activeUser.email,
+        actorRole: activeUser.role,
+        branch,
+        action,
+        resource,
+        details,
+        integrityHash: `${Date.now().toString(16)}local`,
+      };
+      setAuditLogs((prev) => [entry, ...prev]);
     }
   };
 
@@ -219,12 +399,12 @@ export function App() {
           })}
         </nav>
 
-        {/* Active Role / User Switcher */}
+        {/* Active Role / User Switcher & Firebase Auth */}
         <div className="p-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
           <div className="flex items-center gap-3">
             {!avatarFailed ? (
               <img
-                src="/src/assets/images/cna_lead_avatar_1795193812224.jpg"
+                src={firebaseUser?.photoURL || leadAvatarImg}
                 alt={activeUser.name}
                 referrerPolicy="no-referrer"
                 onError={() => setAvatarFailed(true)}
@@ -237,13 +417,33 @@ export function App() {
             )}
             <div className="min-w-0">
               <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
-                {activeUser.name}
+                {firebaseUser?.displayName || activeUser.name}
               </div>
               <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
                 {activeUser.role}
               </div>
             </div>
           </div>
+
+          {firebaseUser ? (
+            <button
+              type="button"
+              onClick={handleGoogleSignOut}
+              className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              Sign Out ({firebaseUser.email?.split('@')[0]})
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleGoogleSignIn}
+              className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-white transition-colors"
+            >
+              <LogIn className="w-3.5 h-3.5" />
+              Sign In with Google
+            </button>
+          )}
 
           <div>
             <label
@@ -316,25 +516,47 @@ export function App() {
               </nav>
             </div>
 
-            <div className="pt-4 border-t border-slate-200 dark:border-slate-800">
-              <label
-                htmlFor="role-switcher-mobile"
-                className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1"
-              >
-                Active Role View
-              </label>
-              <select
-                id="role-switcher-mobile"
-                value={activeUserId}
-                onChange={(e) => setActiveUserId(e.target.value)}
-                className="w-full px-2.5 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100"
-              >
-                {staff.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.role} — {s.name.split(',')[0]}
-                  </option>
-                ))}
-              </select>
+            <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
+              {firebaseUser ? (
+                <button
+                  type="button"
+                  onClick={handleGoogleSignOut}
+                  className="w-full flex items-center justify-center gap-1.5 px-2.5 py-2 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  Sign Out ({firebaseUser.email?.split('@')[0]})
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleGoogleSignIn}
+                  className="w-full flex items-center justify-center gap-1.5 px-2.5 py-2 text-xs font-semibold rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900"
+                >
+                  <LogIn className="w-3.5 h-3.5" />
+                  Sign In with Google
+                </button>
+              )}
+
+              <div>
+                <label
+                  htmlFor="role-switcher-mobile"
+                  className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1"
+                >
+                  Active Role View
+                </label>
+                <select
+                  id="role-switcher-mobile"
+                  value={activeUserId}
+                  onChange={(e) => setActiveUserId(e.target.value)}
+                  className="w-full px-2.5 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                >
+                  {staff.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.role} — {s.name.split(',')[0]}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
           </div>
         </div>
@@ -342,7 +564,6 @@ export function App() {
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Top Bar Contract: Breadcrumb on left, concise utility actions on right */}
         <header className="h-16 px-4 sm:px-8 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4 shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             <button
@@ -363,6 +584,17 @@ export function App() {
           </div>
 
           <div className="flex items-center gap-2.5 shrink-0">
+            {!firebaseUser && (
+              <button
+                type="button"
+                onClick={handleGoogleSignIn}
+                className="lg:hidden inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs font-semibold whitespace-nowrap shrink-0"
+              >
+                <LogIn className="w-3.5 h-3.5" />
+                Google Sign-In
+              </button>
+            )}
+
             <button
               type="button"
               onClick={() => setTourOpen(true)}
@@ -385,6 +617,12 @@ export function App() {
         </header>
 
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
+          {authNotice && (
+            <div className="mb-4 rounded-lg border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/40 px-4 py-2.5 text-xs text-amber-900 dark:text-amber-200">
+              {authNotice}
+            </div>
+          )}
+
           {loading ? (
             <div className="space-y-4">
               <div className="h-24 rounded-xl bg-slate-200/70 dark:bg-slate-800/70 animate-pulse" />
@@ -397,12 +635,21 @@ export function App() {
                   today={today}
                   compliance={globalComplianceToday}
                   dispatches={dispatches}
+                  staff={staff}
+                  backendMode={backendMode}
+                  firebaseUser={firebaseUser}
                   onCheckInSuccess={(rec) => {
-                    setAttendance((prev) => [rec, ...prev]);
-                    fetchBootstrap(activeUserId);
+                    if (backendMode !== 'firebase') {
+                      setAttendance((prev) => [rec, ...prev]);
+                    }
+                    if (backendMode === 'express') {
+                      void fetchExpressBootstrap(activeUserId);
+                    }
                   }}
                   onPasscodeDispatched={(dispatch) => {
-                    setDispatches((prev) => [dispatch, ...prev]);
+                    if (backendMode !== 'firebase') {
+                      setDispatches((prev) => [dispatch, ...prev]);
+                    }
                   }}
                 />
               )}
@@ -420,24 +667,46 @@ export function App() {
                 <RbacAccessView
                   activeUser={activeUser}
                   staff={staff}
-                  onStaffUpdated={(updated) =>
-                    setStaff((prev) => prev.map((s) => (s.id === updated.id ? updated : s)))
-                  }
-                  onStaffCreated={(created) => setStaff((prev) => [...prev, created])}
+                  backendMode={backendMode}
+                  firebaseUser={firebaseUser}
+                  onStaffUpdated={(updated) => {
+                    if (backendMode !== 'firebase') {
+                      setStaff((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+                    }
+                  }}
+                  onStaffCreated={(created) => {
+                    if (backendMode !== 'firebase') {
+                      setStaff((prev) => [...prev, created]);
+                    }
+                  }}
                 />
               )}
 
               {activeTab === 'vault' && (
                 <VaultAndCloudView
                   activeUser={activeUser}
+                  staff={staff}
+                  attendanceCount={attendance.length}
+                  backendMode={backendMode}
+                  firebaseUser={firebaseUser}
                   documents={documents}
                   connectors={connectors}
                   snapshots={snapshots}
-                  onDocumentCreated={(doc) => setDocuments((prev) => [doc, ...prev])}
-                  onConnectorUpdated={(conn) =>
-                    setConnectors((prev) => prev.map((c) => (c.id === conn.id ? conn : c)))
-                  }
-                  onBackupCompleted={(snap) => setSnapshots((prev) => [snap, ...prev])}
+                  onDocumentCreated={(docItem) => {
+                    if (backendMode !== 'firebase') {
+                      setDocuments((prev) => [docItem, ...prev]);
+                    }
+                  }}
+                  onConnectorUpdated={(conn) => {
+                    if (backendMode !== 'firebase') {
+                      setConnectors((prev) => prev.map((c) => (c.id === conn.id ? conn : c)));
+                    }
+                  }}
+                  onBackupCompleted={(snap) => {
+                    if (backendMode !== 'firebase') {
+                      setSnapshots((prev) => [snap, ...prev]);
+                    }
+                  }}
                   onRecordAudit={(action, resource, details, branch) =>
                     handleRecordAudit(action, resource, details, branch)
                   }
@@ -459,13 +728,28 @@ export function App() {
               {activeTab === 'api' && (
                 <ApiIntegrationsView
                   activeUser={activeUser}
+                  staff={staff}
+                  attendanceCount={attendance.length}
+                  auditCount={auditLogs.length}
+                  backendMode={backendMode}
+                  firebaseUser={firebaseUser}
                   apiKeys={apiKeys}
                   webhooks={webhooks}
-                  onKeyCreated={(key) => setApiKeys((prev) => [key, ...prev])}
-                  onKeyRevoked={(revoked) =>
-                    setApiKeys((prev) => prev.map((k) => (k.id === revoked.id ? revoked : k)))
-                  }
-                  onWebhookCreated={(wh) => setWebhooks((prev) => [wh, ...prev])}
+                  onKeyCreated={(key) => {
+                    if (backendMode !== 'firebase') {
+                      setApiKeys((prev) => [key, ...prev]);
+                    }
+                  }}
+                  onKeyRevoked={(revoked) => {
+                    if (backendMode !== 'firebase') {
+                      setApiKeys((prev) => prev.map((k) => (k.id === revoked.id ? revoked : k)));
+                    }
+                  }}
+                  onWebhookCreated={(wh) => {
+                    if (backendMode !== 'firebase') {
+                      setWebhooks((prev) => [wh, ...prev]);
+                    }
+                  }}
                 />
               )}
             </>
